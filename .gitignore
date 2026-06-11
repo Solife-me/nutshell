@@ -145,3 +145,13 @@ tor-data
 *.pem
 
 junit.xml
+
+# StartOS packaging
+node_modules/
+javascript/
+*.s9pk
+!startos/manifest/
+!startos/manifest/**
+.tmp-ai-service-packaging/
+.tmp-ai-service-packaging-unpacked/
+.tmp-ai-service-packaging.zip

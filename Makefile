@@ -1,4 +1,5 @@
 VERSION := $(shell poetry version -s)
+STARTOS_ARCHES ?= x86 arm
 
 ruff:
 	poetry run ruff check . --fix
@@ -69,6 +70,25 @@ install-pre-commit-hook:
 
 pre-commit:
 	poetry run pre-commit run --all-files
+
+.PHONY: s9pk s9pk-x86_64 s9pk-aarch64 s9pk-riscv64 s9pk-install s9pk-clean
+s9pk:
+	$(MAKE) -f s9pk.mk ARCHES="$(STARTOS_ARCHES)"
+
+s9pk-x86_64:
+	$(MAKE) -f s9pk.mk x86_64
+
+s9pk-aarch64:
+	$(MAKE) -f s9pk.mk aarch64
+
+s9pk-riscv64:
+	$(MAKE) -f s9pk.mk riscv64
+
+s9pk-install:
+	$(MAKE) -f s9pk.mk install
+
+s9pk-clean:
+	$(MAKE) -f s9pk.mk clean
 
 .PHONY: docker-build
 docker-build:

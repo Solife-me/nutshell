@@ -204,6 +204,16 @@ Run the mint using the pre-built Docker image. This method sets environment vari
 docker run -d -p 3338:3338 --name nutshell -e MINT_BACKEND_BOLT11_SAT=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY cashubtc/nutshell:0.20.0 poetry run mint
 ```
 
+## StartOS
+
+This repository includes a StartOS 0.4 package wrapper. Build the package with:
+
+```bash
+make s9pk
+```
+
+After installing on StartOS, use the service actions to review mint settings and select a same-server Lightning backend. The package supports LNbits, LND, phoenixd, Core Lightning, and FakeWallet for testing.
+
 ## From this repository
 
 Before you can run your own mint, make sure to enable a Lightning backend in `MINT_BACKEND_BOLT11_SAT` and set `MINT_PRIVATE_KEY` in your `.env` file.

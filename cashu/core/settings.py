@@ -290,6 +290,11 @@ class CoreLightningRestFundingSource(MintSettings):
     mint_corelightning_rest_cert: Optional[str] = Field(default=None)
 
 
+class PhoenixdFundingSource(MintSettings):
+    mint_phoenixd_endpoint: Optional[str] = Field(default=None)
+    mint_phoenixd_password: Optional[str] = Field(default=None)
+
+
 class AuthSettings(MintSettings):
     mint_auth_database: str = Field(default="data/mint")
     mint_require_auth: bool = Field(default=False)
@@ -324,6 +329,7 @@ class Settings(
     LndRestFundingSource,
     CoreLightningRestFundingSource,
     CLNRestFundingSource,
+    PhoenixdFundingSource,
     FakeWalletSettings,
     MintLimits,
     MintBackends,

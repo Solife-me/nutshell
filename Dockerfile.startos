@@ -1,0 +1,35 @@
+FROM python:3.10-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    POETRY_VERSION=1.8.5 \
+    PATH="/root/.local/bin:$PATH"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        build-essential \
+        curl \
+        g++ \
+        libffi-dev \
+        libpq-dev \
+        libtool \
+        pkg-config \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSL https://install.python-poetry.org | python3 - --version "$POETRY_VERSION"
+
+WORKDIR /app
+
+COPY pyproject.toml poetry.lock README.md LICENSE.md MANIFEST.in setup.py ./
+COPY cashu ./cashu
+COPY tor ./tor
+
+RUN poetry config virtualenvs.create false \
+    && poetry install --only main
+
+EXPOSE 3338
+
+CMD ["poetry", "run", "mint"]

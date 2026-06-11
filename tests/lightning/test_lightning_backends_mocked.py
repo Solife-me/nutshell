@@ -19,6 +19,7 @@ from cashu.lightning.clnrest import CLNRestWallet
 from cashu.lightning.corelightningrest import CoreLightningRestWallet
 from cashu.lightning.lnbits import LNbitsWallet  # type: ignore[attr-defined]
 from cashu.lightning.lndrest import LndRestWallet
+from cashu.lightning.phoenixd import PhoenixdWallet
 from cashu.lightning.strike import StrikeWallet
 
 
@@ -245,6 +246,92 @@ def test_strike_fee_int_rejects_unexpected_currency():
     quote = SimpleNamespace(totalFee=SimpleNamespace(amount="1", currency="XYZ"))
     with pytest.raises(Exception, match="Unexpected currency"):
         wallet.fee_int(cast(Any, quote), Unit.sat)
+
+
+def test_clnrest_loads_rune_from_commando_env(tmp_path):
+    rune_file = tmp_path / ".commando-env"
+    rune_file.write_text('LIGHTNING_RUNE="commando-rune"\n')
+    wallet = object.__new__(CLNRestWallet)
+
+    assert wallet._load_rune_file(str(rune_file)) == "commando-rune"
+
+
+def test_phoenixd_load_password_from_conf(tmp_path):
+    conf = tmp_path / "phoenix.conf"
+    conf.write_text('http-password="secret"\nwebhook-secret="ignored"\n')
+    wallet = object.__new__(PhoenixdWallet)
+
+    assert wallet._load_password(str(conf)) == "secret"
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_status_reads_balance():
+    wallet = object.__new__(PhoenixdWallet)
+    wallet.unit = Unit.sat
+    wallet.endpoint = "http://phoenixd.test"
+
+    class Client:
+        async def get(self, url, timeout=None):
+            return _response(200, {"balanceSat": 12, "feeCreditSat": 3})
+
+    cast(Any, wallet).client = Client()
+    status = await wallet.status()
+    assert status.error_message is None
+    assert status.balance == Amount(Unit.sat, 12)
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_create_invoice_returns_serialized_invoice():
+    wallet = object.__new__(PhoenixdWallet)
+    wallet.unit = Unit.sat
+
+    class Client:
+        async def post(self, url, data=None):
+            return _response(
+                200,
+                {"paymentHash": "ab" * 32, "serialized": "lnbc1phoenix"},
+            )
+
+    cast(Any, wallet).client = Client()
+    invoice = await wallet.create_invoice(Amount(Unit.sat, 21), memo="mint")
+    assert invoice.ok
+    assert invoice.checking_id == "ab" * 32
+    assert invoice.payment_request == "lnbc1phoenix"
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_pay_invoice_maps_failure(monkeypatch):
+    wallet = object.__new__(PhoenixdWallet)
+    wallet.unit = Unit.sat
+    monkeypatch.setattr(
+        "cashu.lightning.phoenixd.decode",
+        lambda request: SimpleNamespace(amount_msat=1000),
+    )
+
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            return _response(200, {"paymentHash": "ab" * 32, "reason": "no route"})
+
+    cast(Any, wallet).client = Client()
+    result = await wallet.pay_invoice(_quote("lnbc1fake"), 1000)
+    assert result.result == PaymentResult.FAILED
+    assert result.error_message == "no route"
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_get_invoice_status_maps_settled():
+    wallet = object.__new__(PhoenixdWallet)
+    wallet.unit = Unit.sat
+
+    class Client:
+        async def get(self, url):
+            return _response(200, {"isPaid": True, "fees": 5, "preimage": "00"})
+
+    cast(Any, wallet).client = Client()
+    status = await wallet.get_invoice_status("ab" * 32)
+    assert status.result == PaymentResult.SETTLED
+    assert status.fee == Amount(Unit.msat, 5)
+    assert status.preimage == "00"
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+from pathlib import Path
 from typing import AsyncGenerator, Dict, Optional
 
 import httpx
@@ -56,9 +57,7 @@ class CLNRestWallet(LightningBackend):
             raise Exception("missing rune for clnrest")
         # load from file or use as is
         if os.path.exists(rune_settings):
-            with open(rune_settings) as f:
-                rune = f.read()
-            rune = rune.strip()
+            rune = self._load_rune_file(rune_settings)
         else:
             rune = rune_settings
         self.rune = rune
@@ -83,6 +82,14 @@ class CLNRestWallet(LightningBackend):
             base_url=self.url, verify=self.cert, headers=self.auth, timeout=None,
         )
         self.last_pay_index = 0
+
+    def _load_rune_file(self, path: str) -> str:
+        rune = Path(path).read_text().strip()
+        for line in rune.splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "LIGHTNING_RUNE":
+                return value.strip().strip('"')
+        return rune
 
     async def cleanup(self):
         try:
