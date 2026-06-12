@@ -5,7 +5,7 @@ import httpx
 import jwt
 from loguru import logger
 
-from ...core.base import AuthProof
+from ...core.base import AuthProof, BlindedMessage, BlindedSignature
 from ...core.db import Database
 from ...core.errors import (
     BlindAuthAmountExceededError,
@@ -13,7 +13,6 @@ from ...core.errors import (
     BlindAuthRateLimitExceededError,
     ClearAuthFailedError,
 )
-from ...core.models import BlindedMessage, BlindedSignature
 from ...core.settings import settings
 from ..crud import LedgerCrudSqlite
 from ..ledger import Ledger
@@ -233,7 +232,8 @@ class AuthLedger(Ledger):
 
         try:
             yield
-            await self._invalidate_proofs(proofs=[proof])
+            # We do not calculate fees for auth keysets
+            await self.db_write.invalidate_proofs(proofs=[proof], keysets=self.keysets)
         except Exception as e:
             logger.error(f"Blind auth error: {e}")
             raise BlindAuthFailedError()
