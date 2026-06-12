@@ -1,4 +1,4 @@
-VERSION := $(shell poetry version -s)
+VERSION := $(shell poetry version -s 2>/dev/null || sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -n 1)
 STARTOS_ARCHES ?= x86 arm
 
 ruff:

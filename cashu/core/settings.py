@@ -97,6 +97,8 @@ class MintBackends(MintSettings):
     mint_backend_bolt11_msat: str = Field(default="")
     mint_backend_bolt11_usd: str = Field(default="")
     mint_backend_bolt11_eur: str = Field(default="")
+    mint_backend_bolt12_sat: str = Field(default="")
+    mint_backend_bolt12_msat: str = Field(default="")
 
     mint_lnbits_endpoint: Optional[str] = Field(default=None)
     mint_lnbits_key: Optional[str] = Field(default=None)
@@ -312,8 +314,11 @@ class AuthSettings(MintSettings):
     mint_require_blind_auth_paths: List[List[str]] = [
         ["POST", "/v1/swap"],
         ["POST", "/v1/mint/quote/bolt11"],
+        ["POST", "/v1/mint/quote/bolt12"],
         ["POST", "/v1/mint/bolt11"],
+        ["POST", "/v1/mint/bolt12"],
         ["POST", "/v1/melt/bolt11"],
+        ["POST", "/v1/melt/bolt12"],
     ]
 
 

@@ -2,7 +2,8 @@
 # This file is imported by the StartOS targets in ./Makefile. Make edits there.
 
 PACKAGE_ID := $(shell awk -F"'" '/id:/ {print $$2}' startos/manifest/index.ts)
-INGREDIENTS := $(shell start-cli s9pk list-ingredients 2>/dev/null)
+START_CLI ?= start-cli
+INGREDIENTS := $(sort $(shell $(START_CLI) s9pk list-ingredients 2>/dev/null) instructions.md)
 GIT_DIR := $(shell git rev-parse --git-dir 2>/dev/null)
 GIT_DEPS := $(if $(GIT_DIR),$(GIT_DIR)/HEAD $(GIT_DIR)/index)
 ARCHES ?= x86 arm
@@ -19,7 +20,7 @@ endif
 .SECONDARY:
 
 define SUMMARY
-	@manifest=$$(start-cli s9pk inspect $(1) manifest); \
+	@manifest=$$($(START_CLI) s9pk inspect $(1) manifest); \
 	size=$$(du -h $(1) | awk '{print $$1}'); \
 	title=$$(printf '%s' "$$manifest" | jq -r .title); \
 	version=$$(printf '%s' "$$manifest" | jq -r .version); \
@@ -30,7 +31,7 @@ define SUMMARY
 	printf "\033[1;32mBuild Complete\033[0m\n"; \
 	printf "\n"; \
 	printf "\033[1;37m $$title\033[0m \033[36mv$$version\033[0m\n"; \
-	printf "-------------------------------\n"; \
+	printf "%s\n" "-------------------------------"; \
 	printf " \033[1;36mFilename:\033[0m %s\n" "$(1)"; \
 	printf " \033[1;36mSize:\033[0m %s\n" "$$size"; \
 	printf " \033[1;36mArch:\033[0m %s\n" "$$arches"; \
@@ -39,7 +40,7 @@ define SUMMARY
 	echo ""
 endef
 
-all: $(TARGETS)
+all: check-deps $(TARGETS)
 
 arches: $(ARCHES)
 
@@ -59,12 +60,12 @@ riscv riscv64: arch/riscv64
 $(BASE_NAME).s9pk: $(INGREDIENTS) $(GIT_DEPS) javascript/index.js
 	@$(MAKE) --no-print-directory -f s9pk.mk ingredients
 	@echo "Packing '$@'..."
-	start-cli s9pk pack -o $@
+	$(START_CLI) s9pk pack --instructions instructions.md -o $@
 
 $(BASE_NAME)_%.s9pk: $(INGREDIENTS) $(GIT_DEPS) javascript/index.js
 	@$(MAKE) --no-print-directory -f s9pk.mk ingredients
 	@echo "Packing '$@'..."
-	start-cli s9pk pack --arch=$* -o $@
+	$(START_CLI) s9pk pack --arch=$* --instructions instructions.md -o $@
 
 ingredients: $(INGREDIENTS)
 	@echo "Re-evaluating ingredients..."
@@ -79,13 +80,15 @@ install: | check-deps check-init
 		echo "Error: No .s9pk file found. Run 'make s9pk' first."; \
 		exit 1; \
 	fi; \
-	S9PK=$$(start-cli s9pk select) || exit 1; \
+	S9PK=$$($(START_CLI) s9pk select) || exit 1; \
 	printf "\nInstalling %s to %s ...\n" "$$S9PK" "$$HOST"; \
-	start-cli package install -s "$$S9PK"
+	$(START_CLI) package install -s "$$S9PK"
 
 check-deps:
-	@command -v start-cli >/dev/null || \
+	@command -v $(START_CLI) >/dev/null || \
 		(echo "Error: start-cli not found. Please see https://docs.start9.com/latest/developer-guide/sdk/installing-the-sdk" && exit 1)
+	@$(START_CLI) s9pk pack --help | grep -q -- '--instructions' || \
+		(echo "Error: start-cli is too old. Install StartOS 0.4.0-beta.9 or newer packaging tools." && exit 1)
 	@command -v npm >/dev/null || \
 		(echo "Error: npm not found. Please install Node.js and npm." && exit 1)
 

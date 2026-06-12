@@ -169,6 +169,26 @@ class PostMintQuoteResponse(BaseModel):
         return cls.model_validate(to_dict)
 
 
+class PostMintQuoteBolt12Request(BaseModel):
+    unit: str = Field(..., max_length=settings.mint_max_request_length)
+    amount: Optional[int] = Field(default=None, gt=0)
+    description: Optional[str] = Field(
+        default=None, max_length=settings.mint_max_request_length
+    )
+    pubkey: str = Field(..., max_length=settings.mint_max_request_length)
+
+
+class PostMintQuoteBolt12Response(BaseModel):
+    quote: str
+    request: str
+    amount: Optional[int]
+    unit: str
+    expiry: Optional[int]
+    pubkey: str
+    amount_paid: int
+    amount_issued: int
+
+
 # ------- API: MINT -------
 
 
@@ -208,8 +228,13 @@ class PostMeltRequestOptionMpp(BaseModel):
     amount: int = Field(gt=0)  # input amount
 
 
+class PostMeltRequestOptionAmountless(BaseModel):
+    amount_msat: int = Field(gt=0)
+
+
 class PostMeltRequestOptions(BaseModel):
-    mpp: Optional[PostMeltRequestOptionMpp]
+    mpp: Optional[PostMeltRequestOptionMpp] = None
+    amountless: Optional[PostMeltRequestOptionAmountless] = None
 
 
 class PostMeltQuoteRequest(BaseModel):
@@ -232,6 +257,16 @@ class PostMeltQuoteRequest(BaseModel):
             return self.options.mpp.amount
         else:
             raise Exception("quote request is not mpp.")
+
+    @property
+    def is_amountless(self) -> bool:
+        return bool(self.options and self.options.amountless)
+
+    @property
+    def amountless_amount_msat(self) -> int:
+        if self.is_amountless and self.options and self.options.amountless:
+            return self.options.amountless.amount_msat
+        raise Exception("quote request is not amountless.")
 
 
 class PostMeltQuoteResponse(BaseModel):

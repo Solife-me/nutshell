@@ -20,6 +20,7 @@ from ..core.nuts.nuts import (
     MINT_NUT,
     MINT_QUOTE_SIGNATURE_NUT,
     MPP_NUT,
+    METHOD_BOLT12_NUT,
     P2PK_NUT,
     RESTORE_NUT,
     SCRIPT_NUT,
@@ -123,6 +124,8 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
         mint_features[DLEQ_NUT] = supported_dict
         mint_features[HTLC_NUT] = supported_dict
         mint_features[MINT_QUOTE_SIGNATURE_NUT] = supported_dict
+        if Method.bolt12 in self.backends:
+            mint_features[METHOD_BOLT12_NUT] = supported_dict
         return mint_features
 
     def add_mpp_features(
@@ -216,7 +219,15 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
                     },
                     {
                         "method": "POST",
+                        "path": "/v1/mint/bolt12",
+                    },
+                    {
+                        "method": "POST",
                         "path": "/v1/melt/bolt11",
+                    },
+                    {
+                        "method": "POST",
+                        "path": "/v1/melt/bolt12",
                     },
                     {
                         "method": "POST",

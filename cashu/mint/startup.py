@@ -70,6 +70,16 @@ if settings.mint_backend_bolt11_eur:
         unit=Unit.eur
     )
     backends.setdefault(Method.bolt11, {})[Unit.eur] = backend_bolt11_eur
+if settings.mint_backend_bolt12_sat:
+    backend_bolt12_sat = getattr(wallets_module, settings.mint_backend_bolt12_sat)(
+        unit=Unit.sat
+    )
+    backends.setdefault(Method.bolt12, {})[Unit.sat] = backend_bolt12_sat
+if settings.mint_backend_bolt12_msat:
+    backend_bolt12_msat = getattr(wallets_module, settings.mint_backend_bolt12_msat)(
+        unit=Unit.msat
+    )
+    backends.setdefault(Method.bolt12, {})[Unit.msat] = backend_bolt12_msat
 if not backends:
     raise Exception("No backends are set.")
 

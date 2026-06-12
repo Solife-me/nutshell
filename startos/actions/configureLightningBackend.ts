@@ -1,4 +1,5 @@
 import { i18n } from '../i18n'
+import { dependenciesForBackend } from '../dependencies'
 import { storeJson } from '../fileModels/store.json'
 import { sdk } from '../sdk'
 
@@ -65,6 +66,10 @@ export const configureLightningBackend = sdk.Action.withInput(
     await storeJson.merge(effects, {
       lightningBackend: input.backend,
       lnbitsKey: input.lnbitsKey || undefined,
+    })
+
+    await effects.setDependencies({
+      dependencies: dependenciesForBackend(input.backend),
     })
 
     return {

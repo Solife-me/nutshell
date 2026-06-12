@@ -20,7 +20,7 @@ const backendEnv = (
     case 'cln':
       return {
         MINT_BACKEND_BOLT11_SAT: 'CLNRestWallet',
-        MINT_CLNREST_CERT: '/mnt/cln/bitcoin/ca.pem',
+        MINT_BACKEND_BOLT12_SAT: 'CLNRestWallet',
         MINT_CLNREST_RUNE: '/mnt/cln/.commando-env',
         MINT_CLNREST_URL: 'https://c-lightning.startos:3010',
       }

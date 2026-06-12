@@ -695,6 +695,7 @@ class Amount:
 
 class Method(Enum):
     bolt11 = 0
+    bolt12 = 1
 
 
 class WalletKeyset:

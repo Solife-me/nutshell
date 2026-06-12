@@ -37,7 +37,7 @@ export const initializeService = sdk.setupOnInit(async (effects, kind) => {
   await sdk.action.createOwnTask(
     effects,
     configureMintSettings,
-    'high',
+    'important',
     {
       reason: i18n('Review mint settings'),
     },
@@ -46,7 +46,7 @@ export const initializeService = sdk.setupOnInit(async (effects, kind) => {
   await sdk.action.createOwnTask(
     effects,
     configureLightningBackend,
-    'high',
+    'important',
     {
       reason: i18n('Configure a Lightning backend'),
     },

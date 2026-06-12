@@ -16,6 +16,8 @@ from ..core.models import (
     PostMeltQuoteRequest,
     PostMeltQuoteResponse,
     PostMeltRequest,
+    PostMintQuoteBolt12Request,
+    PostMintQuoteBolt12Response,
     PostMintQuoteRequest,
     PostMintQuoteResponse,
     PostMintRequest,
@@ -209,6 +211,39 @@ async def get_mint_quote(request: Request, quote: str) -> PostMintQuoteResponse:
     return resp
 
 
+@router.post(
+    "/v1/mint/quote/bolt12",
+    name="Request BOLT12 mint quote",
+    summary="Request a quote for minting new tokens with a BOLT12 offer",
+    response_model=PostMintQuoteBolt12Response,
+    response_description="A BOLT12 offer to mint tokens.",
+)
+@limiter.limit(f"{settings.mint_transaction_rate_limit_per_minute}/minute")
+async def mint_quote_bolt12(
+    request: Request, payload: PostMintQuoteBolt12Request
+) -> PostMintQuoteBolt12Response:
+    logger.trace(f"> POST /v1/mint/quote/bolt12: payload={payload}")
+    resp = await ledger.mint_quote_bolt12(payload)
+    logger.trace(f"< POST /v1/mint/quote/bolt12: {resp}")
+    return resp
+
+
+@router.get(
+    "/v1/mint/quote/bolt12/{quote}",
+    summary="Get BOLT12 mint quote",
+    response_model=PostMintQuoteBolt12Response,
+    response_description="Get an existing BOLT12 mint quote to check its status.",
+)
+@limiter.limit(f"{settings.mint_transaction_rate_limit_per_minute}/minute")
+async def get_mint_quote_bolt12(
+    request: Request, quote: str
+) -> PostMintQuoteBolt12Response:
+    logger.trace(f"> GET /v1/mint/quote/bolt12/{quote}")
+    resp = await ledger.get_mint_quote_bolt12(quote)
+    logger.trace(f"< GET /v1/mint/quote/bolt12/{quote}: {resp}")
+    return resp
+
+
 @router.websocket("/v1/ws", name="Websocket endpoint for subscriptions")
 async def websocket_endpoint(websocket: WebSocket):
     limit_websocket(websocket)
@@ -266,6 +301,30 @@ async def mint(
 
 
 @router.post(
+    "/v1/mint/bolt12",
+    name="Mint tokens with a BOLT12 offer payment",
+    summary="Mint tokens by paying a BOLT12 offer.",
+    response_model=PostMintResponse,
+    response_description=(
+        "A list of blinded signatures that can be used to create proofs."
+    ),
+)
+@limiter.limit(f"{settings.mint_transaction_rate_limit_per_minute}/minute")
+@redis.cache()
+async def mint_bolt12(
+    request: Request,
+    payload: PostMintRequest,
+) -> PostMintResponse:
+    logger.trace(f"> POST /v1/mint/bolt12: {payload}")
+    promises = await ledger.mint_bolt12(
+        outputs=payload.outputs, quote_id=payload.quote, signature=payload.signature
+    )
+    blinded_signatures = PostMintResponse(signatures=promises)
+    logger.trace(f"< POST /v1/mint/bolt12: {blinded_signatures}")
+    return blinded_signatures
+
+
+@router.post(
     "/v1/melt/quote/bolt11",
     summary="Request a quote for melting tokens",
     response_model=PostMeltQuoteResponse,
@@ -314,6 +373,50 @@ async def get_melt_quote(request: Request, quote: str) -> PostMeltQuoteResponse:
 
 
 @router.post(
+    "/v1/melt/quote/bolt12",
+    summary="Request a BOLT12 melt quote",
+    response_model=PostMeltQuoteResponse,
+    response_description="Melt tokens for a BOLT12 offer.",
+)
+@limiter.limit(f"{settings.mint_transaction_rate_limit_per_minute}/minute")
+async def melt_quote_bolt12(
+    request: Request, payload: PostMeltQuoteRequest
+) -> PostMeltQuoteResponse:
+    logger.trace(f"> POST /v1/melt/quote/bolt12: {payload}")
+    quote = await ledger.melt_quote_bolt12(payload)
+    logger.trace(f"< POST /v1/melt/quote/bolt12: {quote}")
+    return quote
+
+
+@router.get(
+    "/v1/melt/quote/bolt12/{quote}",
+    summary="Get BOLT12 melt quote",
+    response_model=PostMeltQuoteResponse,
+    response_description="Get an existing BOLT12 melt quote to check its status.",
+)
+@limiter.limit(f"{settings.mint_transaction_rate_limit_per_minute}/minute")
+async def get_melt_quote_bolt12(
+    request: Request, quote: str
+) -> PostMeltQuoteResponse:
+    logger.trace(f"> GET /v1/melt/quote/bolt12/{quote}")
+    melt_quote = await ledger.get_melt_quote(quote)
+    resp = PostMeltQuoteResponse(
+        quote=melt_quote.quote,
+        amount=melt_quote.amount,
+        unit=melt_quote.unit,
+        request=melt_quote.request,
+        fee_reserve=melt_quote.fee_reserve,
+        paid=melt_quote.paid,
+        state=melt_quote.state.value,
+        expiry=melt_quote.expiry,
+        payment_preimage=melt_quote.payment_preimage,
+        change=melt_quote.change,
+    )
+    logger.trace(f"< GET /v1/melt/quote/bolt12/{quote}")
+    return resp
+
+
+@router.post(
     "/v1/melt/bolt11",
     name="Melt tokens",
     summary=(
@@ -337,6 +440,29 @@ async def melt(request: Request, payload: PostMeltRequest) -> PostMeltQuoteRespo
         proofs=payload.inputs, quote=payload.quote, outputs=payload.outputs
     )
     logger.trace(f"< POST /v1/melt/bolt11: {resp}")
+    return resp
+
+
+@router.post(
+    "/v1/melt/bolt12",
+    name="Melt tokens for a BOLT12 offer",
+    summary="Melt tokens for a BOLT12 offer payment.",
+    response_model=PostMeltQuoteResponse,
+    response_description=(
+        "The state of the payment, a preimage as proof of payment, and a list of"
+        " promises for change."
+    ),
+)
+@limiter.limit(f"{settings.mint_transaction_rate_limit_per_minute}/minute")
+@redis.cache()
+async def melt_bolt12(
+    request: Request, payload: PostMeltRequest
+) -> PostMeltQuoteResponse:
+    logger.trace(f"> POST /v1/melt/bolt12: {payload}")
+    resp = await ledger.melt(
+        proofs=payload.inputs, quote=payload.quote, outputs=payload.outputs
+    )
+    logger.trace(f"< POST /v1/melt/bolt12: {resp}")
     return resp
 
 

@@ -35,6 +35,26 @@ class InvoiceResponse(BaseModel):
     error_message: Optional[str] = None
 
 
+class OfferResponse(BaseModel):
+    ok: bool
+    checking_id: Optional[str] = None
+    payment_request: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class OfferStatusResponse(BaseModel):
+    amount_paid: Amount
+    error_message: Optional[str] = None
+
+
+class Bolt12InvoiceQuoteResponse(BaseModel):
+    invoice: str
+    payment_hash: str
+    amount: Amount
+    fee: Amount
+    expiry: Optional[int] = None
+
+
 class PaymentResult(Enum):
     SETTLED = auto()
     FAILED = auto()
@@ -160,6 +180,26 @@ class LightningBackend(ABC):
         melt_quote: PostMeltQuoteRequest,
     ) -> PaymentQuoteResponse:
         pass
+
+    async def create_offer(
+        self,
+        amount: Optional[Amount],
+        description: Optional[str],
+        label: str,
+    ) -> OfferResponse:
+        raise Unsupported("BOLT12 offers are not supported by this backend")
+
+    async def get_offer_status(
+        self,
+        offer_id: str,
+    ) -> OfferStatusResponse:
+        raise Unsupported("BOLT12 offers are not supported by this backend")
+
+    async def get_bolt12_invoice_quote(
+        self,
+        melt_quote: PostMeltQuoteRequest,
+    ) -> Bolt12InvoiceQuoteResponse:
+        raise Unsupported("BOLT12 offers are not supported by this backend")
 
     # @abstractmethod
     # async def get_invoice_quote(

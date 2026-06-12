@@ -44,6 +44,8 @@ from ..core.helpers import sum_proofs
 from ..core.models import (
     PostMeltQuoteRequest,
     PostMeltQuoteResponse,
+    PostMintQuoteBolt12Request,
+    PostMintQuoteBolt12Response,
     PostMintQuoteRequest,
 )
 from ..core.settings import settings
@@ -418,6 +420,136 @@ class Ledger(
 
         return quote
 
+    async def mint_quote_bolt12(
+        self, quote_request: PostMintQuoteBolt12Request
+    ) -> PostMintQuoteBolt12Response:
+        """Creates a BOLT12 offer mint quote and stores it in the database."""
+        if quote_request.amount is not None and not quote_request.amount > 0:
+            raise TransactionError("amount must be positive")
+        if (
+            quote_request.amount
+            and settings.mint_max_mint_bolt11_sat
+            and quote_request.amount > settings.mint_max_mint_bolt11_sat
+        ):
+            raise TransactionAmountExceedsLimitError(
+                f"Maximum mint amount is {settings.mint_max_mint_bolt11_sat} sat."
+            )
+        if settings.mint_bolt11_disable_mint:
+            raise NotAllowedError("Minting is disabled.")
+
+        unit, method = self._verify_and_get_unit_method(
+            quote_request.unit, Method.bolt12.name
+        )
+
+        if (
+            quote_request.description
+            and not self.backends[method][unit].supports_description
+        ):
+            raise NotAllowedError("Backend does not support descriptions.")
+
+        if settings.mint_max_balance and quote_request.amount:
+            balance, _fees_paid = await self.get_unit_balance_and_fees(
+                unit, db=self.db
+            )
+            if balance + quote_request.amount > settings.mint_max_balance:
+                raise NotAllowedError("Mint has reached maximum balance.")
+
+        quote_id = random_hash()
+        amount = (
+            Amount(unit=unit, amount=quote_request.amount)
+            if quote_request.amount
+            else None
+        )
+        offer_response = await self.backends[method][unit].create_offer(
+            amount=amount,
+            description=quote_request.description,
+            label=quote_id,
+        )
+        if not (offer_response.payment_request and offer_response.checking_id):
+            raise LightningError(
+                offer_response.error_message
+                or "could not fetch bolt12 offer from backend"
+            )
+
+        quote = MintQuote(
+            quote=quote_id,
+            method=method.name,
+            request=offer_response.payment_request.lower(),
+            checking_id=offer_response.checking_id,
+            unit=quote_request.unit,
+            amount=quote_request.amount or 0,
+            state=MintQuoteState.unpaid,
+            created_time=int(time.time()),
+            expiry=None,
+            pubkey=quote_request.pubkey,
+        )
+        await self.crud.store_mint_quote(quote=quote, db=self.db)
+        await self.events.submit(quote)
+
+        return PostMintQuoteBolt12Response(
+            quote=quote.quote,
+            request=quote.request,
+            amount=quote_request.amount,
+            unit=quote.unit,
+            expiry=quote.expiry,
+            pubkey=quote.pubkey or "",
+            amount_paid=0,
+            amount_issued=0,
+        )
+
+    async def _get_mint_quote_amount_issued(
+        self, quote_id: str, conn: Optional[Connection] = None
+    ) -> int:
+        row = await (conn or self.db).fetchone(
+            f"""
+            SELECT COALESCE(SUM(amount), 0) AS amount_issued
+            FROM {self.db.table_with_schema('promises')}
+            WHERE mint_quote = :quote_id AND c_ IS NOT NULL
+            """,
+            {"quote_id": quote_id},
+        )
+        return int(row["amount_issued"] or 0) if row else 0
+
+    async def _get_bolt12_mint_quote_amounts(
+        self, quote: MintQuote, conn: Optional[Connection] = None
+    ) -> Tuple[int, int]:
+        unit, method = self._verify_and_get_unit_method(quote.unit, quote.method)
+        status = await self.backends[method][unit].get_offer_status(quote.checking_id)
+        if status.error_message:
+            raise LightningError(status.error_message)
+        amount_paid = status.amount_paid.to(unit, round="down").amount
+        amount_issued = await self._get_mint_quote_amount_issued(quote.quote, conn)
+        return amount_paid, amount_issued
+
+    async def get_mint_quote_bolt12(
+        self, quote_id: str
+    ) -> PostMintQuoteBolt12Response:
+        quote = await self.crud.get_mint_quote(quote_id=quote_id, db=self.db)
+        if not quote:
+            raise Exception("quote not found")
+        if quote.method != Method.bolt12.name:
+            raise TransactionError("quote is not a bolt12 quote")
+        if not quote.pubkey:
+            raise TransactionError("bolt12 mint quote has no pubkey")
+
+        amount_paid, amount_issued = await self._get_bolt12_mint_quote_amounts(quote)
+        if quote.unpaid and amount_paid > amount_issued:
+            quote.state = MintQuoteState.paid
+            quote.paid_time = int(time.time())
+            await self.crud.update_mint_quote(quote=quote, db=self.db)
+            await self.events.submit(quote)
+
+        return PostMintQuoteBolt12Response(
+            quote=quote.quote,
+            request=quote.request,
+            amount=quote.amount or None,
+            unit=quote.unit,
+            expiry=quote.expiry,
+            pubkey=quote.pubkey,
+            amount_paid=amount_paid,
+            amount_issued=amount_issued,
+        )
+
     async def get_mint_quote(self, quote_id: str) -> MintQuote:
         """Returns a mint quote. If the quote is not paid, checks with the backend if the associated request is paid.
 
@@ -526,6 +658,63 @@ class Ledger(
             quote_id=quote_id, state=MintQuoteState.issued
         )
 
+        return promises
+
+    async def mint_bolt12(
+        self,
+        *,
+        outputs: List[BlindedMessage],
+        quote_id: str,
+        signature: Optional[str] = None,
+    ) -> List[BlindedSignature]:
+        """Mints tokens for a paid BOLT12 offer quote."""
+        await self._verify_outputs(outputs)
+        sum_amount_outputs = sum([b.amount for b in outputs])
+        output_unit = self.keysets[outputs[0].id].unit
+
+        async with self.db.get_connection(
+            lock_table="mint_quotes",
+            lock_select_statement="quote = :quote",
+            lock_parameters={"quote": quote_id},
+        ) as conn:
+            quote = await self.crud.get_mint_quote(
+                quote_id=quote_id, db=self.db, conn=conn
+            )
+            if not quote:
+                raise Exception("quote not found")
+            if quote.method != Method.bolt12.name:
+                raise TransactionError("quote is not a bolt12 quote")
+            if not quote.unit == output_unit.name:
+                raise TransactionError("quote unit does not match output unit")
+            if quote.expiry and quote.expiry < int(time.time()):
+                raise TransactionError("quote expired")
+
+            amount_paid, amount_issued = await self._get_bolt12_mint_quote_amounts(
+                quote, conn
+            )
+            amount_mintable = amount_paid - amount_issued
+            if amount_mintable <= 0:
+                raise QuoteNotPaidError()
+            if sum_amount_outputs > amount_mintable:
+                raise TransactionError(
+                    "amount to mint exceeds paid and unissued amount"
+                )
+            if not self._verify_mint_quote_witness(quote, outputs, signature):
+                raise QuoteSignatureInvalidError()
+
+            if quote.unpaid:
+                quote.state = MintQuoteState.paid
+                quote.paid_time = int(time.time())
+                await self.crud.update_mint_quote(
+                    quote=quote, db=self.db, conn=conn
+                )
+            elif quote.pending:
+                raise TransactionError("Mint quote already pending.")
+
+            await self._store_blinded_messages(outputs, mint_id=quote_id, conn=conn)
+            promises = await self._sign_blinded_messages(outputs, conn)
+
+        await self.events.submit(quote)
         return promises
 
     def create_internal_melt_quote(
@@ -690,6 +879,58 @@ class Ledger(
             expiry=quote.expiry,
         )
 
+    async def melt_quote_bolt12(
+        self, melt_quote: PostMeltQuoteRequest
+    ) -> PostMeltQuoteResponse:
+        """Creates a BOLT12 melt quote by fetching a payable invoice for an offer."""
+        if settings.mint_bolt11_disable_melt:
+            raise NotAllowedError("Melting is disabled.")
+        if melt_quote.is_mpp:
+            raise TransactionError("mpp is not supported for bolt12 offers")
+
+        unit, method = self._verify_and_get_unit_method(
+            melt_quote.unit, Method.bolt12.name
+        )
+
+        invoice_quote = await self.backends[method][unit].get_bolt12_invoice_quote(
+            melt_quote=melt_quote
+        )
+
+        if (
+            settings.mint_max_melt_bolt11_sat
+            and invoice_quote.amount.to(unit).amount > settings.mint_max_melt_bolt11_sat
+        ):
+            raise NotAllowedError(
+                f"Maximum melt amount is {settings.mint_max_melt_bolt11_sat} sat."
+            )
+
+        request = melt_quote.request.lower()
+        quote = MeltQuote(
+            quote=random_hash(),
+            method=method.name,
+            request=request,
+            checking_id=invoice_quote.invoice,
+            unit=unit.name,
+            amount=invoice_quote.amount.to(unit).amount,
+            state=MeltQuoteState.unpaid,
+            fee_reserve=invoice_quote.fee.to(unit).amount,
+            created_time=int(time.time()),
+            expiry=invoice_quote.expiry,
+        )
+        await self.db_write._store_melt_quote(quote)
+        await self.events.submit(quote)
+
+        return PostMeltQuoteResponse(
+            quote=quote.quote,
+            amount=quote.amount,
+            unit=quote.unit,
+            request=quote.request,
+            fee_reserve=quote.fee_reserve,
+            paid=quote.paid,
+            state=quote.state.value,
+            expiry=quote.expiry,
+        )
+
     async def get_melt_quote(self, quote_id: str, rollback_unknown=False) -> MeltQuote:
         """Returns a melt quote.
 
@@ -804,6 +1045,9 @@ class Ledger(
         Returns:
             MeltQuote: Settled melt quote.
         """
+        if melt_quote.method != Method.bolt11.name:
+            return melt_quote
+
         # first we check if there is a mint quote with the same payment request
         # so that we can handle the transaction internally without the backend
         mint_quote = await self.crud.get_mint_quote(

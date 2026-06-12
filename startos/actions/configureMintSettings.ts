@@ -20,7 +20,7 @@ const defaults = {
   mintInputFeePpk: '100',
   mintRateLimit: 'false' satisfies BoolValue,
   mintTransactionRateLimitPerMinute: '20',
-}
+} as const
 
 const asBool = (value: string | undefined): BoolValue =>
   value === 'true' ? 'true' : 'false'

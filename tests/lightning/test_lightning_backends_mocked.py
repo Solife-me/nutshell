@@ -10,6 +10,7 @@ from cashu.core.base import Amount, MeltQuote, MeltQuoteState, Unit
 from cashu.core.helpers import fee_reserve
 from cashu.core.models import (
     PostMeltQuoteRequest,
+    PostMeltRequestOptionAmountless,
     PostMeltRequestOptionMpp,
     PostMeltRequestOptions,
 )
@@ -37,6 +38,19 @@ def _quote(request: str, amount: int = 1, unit: str = "sat") -> MeltQuote:
         request=request,
         checking_id="checking-1",
         unit=unit,
+        amount=amount,
+        fee_reserve=1,
+        state=MeltQuoteState.unpaid,
+    )
+
+
+def _bolt12_quote(request: str, invoice: str, amount: int = 1) -> MeltQuote:
+    return MeltQuote(
+        quote="q1",
+        method="bolt12",
+        request=request,
+        checking_id=invoice,
+        unit="sat",
         amount=amount,
         fee_reserve=1,
         state=MeltQuoteState.unpaid,
@@ -412,6 +426,147 @@ async def test_clnrest_get_payment_quote_uses_mpp_amount(monkeypatch):
     quote = await wallet.get_payment_quote(request)
     assert quote.amount == Amount(Unit.sat, 2)
     assert quote.fee == Amount(Unit.sat, fee_reserve(1500) // 1000)
+
+
+@pytest.mark.asyncio
+async def test_clnrest_create_offer_uses_bolt12_rpc():
+    wallet = object.__new__(CLNRestWallet)
+    wallet.unit = Unit.sat
+    calls = []
+
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            calls.append((url, data))
+            return _response(
+                200,
+                {
+                    "offer_id": "offer-id",
+                    "bolt12": "lno1offer",
+                },
+            )
+
+    cast(Any, wallet).client = Client()
+    offer = await wallet.create_offer(
+        Amount(Unit.sat, 21), description="mint", label="quote-id"
+    )
+
+    assert offer.ok
+    assert offer.checking_id == "offer-id"
+    assert offer.payment_request == "lno1offer"
+    assert calls == [
+        (
+            "/v1/offer",
+            {
+                "amount": "21000msat",
+                "description": "mint",
+                "label": "quote-id",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clnrest_get_offer_status_sums_paid_invoices():
+    wallet = object.__new__(CLNRestWallet)
+    wallet.unit = Unit.sat
+
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            assert url == "/v1/listinvoices"
+            assert data == {"offer_id": "offer-id"}
+            return _response(
+                200,
+                {
+                    "invoices": [
+                        {"status": "paid", "amount_received_msat": 1000},
+                        {"status": "unpaid", "amount_received_msat": 2000},
+                        {"status": "paid", "amount_received_msat": "3000msat"},
+                    ]
+                },
+            )
+
+    cast(Any, wallet).client = Client()
+    status = await wallet.get_offer_status("offer-id")
+    assert status.error_message is None
+    assert status.amount_paid == Amount(Unit.msat, 4000)
+
+
+@pytest.mark.asyncio
+async def test_clnrest_get_bolt12_invoice_quote_fetches_and_decodes():
+    wallet = object.__new__(CLNRestWallet)
+    wallet.unit = Unit.sat
+    calls = []
+
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            calls.append((url, data))
+            if url == "/v1/fetchinvoice":
+                return _response(200, {"invoice": "lni1invoice"})
+            if url == "/v1/decode":
+                return _response(
+                    200,
+                    {
+                        "type": "bolt12 invoice",
+                        "valid": True,
+                        "invoice_payment_hash": "ab" * 32,
+                        "invoice_amount_msat": "21000msat",
+                        "invoice_created_at": 100,
+                        "invoice_relative_expiry": 60,
+                    },
+                )
+            raise AssertionError(url)
+
+    cast(Any, wallet).client = Client()
+    request = PostMeltQuoteRequest(
+        unit="sat",
+        request="lno1offer",
+        options=PostMeltRequestOptions(
+            amountless=PostMeltRequestOptionAmountless(amount_msat=21000)
+        ),
+    )
+    quote = await wallet.get_bolt12_invoice_quote(request)
+
+    assert quote.invoice == "lni1invoice"
+    assert quote.payment_hash == "ab" * 32
+    assert quote.amount == Amount(Unit.sat, 21)
+    assert quote.fee == Amount(Unit.sat, fee_reserve(21000) // 1000)
+    assert quote.expiry == 160
+    assert calls == [
+        ("/v1/fetchinvoice", {"offer": "lno1offer", "amount_msat": 21000}),
+        ("/v1/decode", {"string": "lni1invoice"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clnrest_pay_invoice_uses_stored_bolt12_invoice():
+    wallet = object.__new__(CLNRestWallet)
+    wallet.unit = Unit.sat
+    calls = []
+
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            calls.append((url, data))
+            return _response(
+                200,
+                {
+                    "payment_hash": "ab" * 32,
+                    "payment_preimage": "cd" * 32,
+                    "amount_msat": 1000,
+                    "amount_sent_msat": 1001,
+                    "status": "complete",
+                },
+            )
+
+    cast(Any, wallet).client = Client()
+    result = await wallet.pay_invoice(
+        _bolt12_quote("lno1offer", "lni1invoice"), fee_limit_msat=1000
+    )
+
+    assert result.result == PaymentResult.SETTLED
+    assert result.checking_id == "ab" * 32
+    assert result.preimage == "cd" * 32
+    assert calls[0][0] == "/v1/pay"
+    assert calls[0][1]["bolt11"] == "lni1invoice"
 
 
 @pytest.mark.asyncio
