@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 env = Env()
 
-VERSION = "0.20.0"
+VERSION = "0.20.1"
 
 
 def find_env_file():
@@ -63,6 +63,18 @@ class MintSettings(CashuSettings):
 
     mint_input_fee_ppk: int = Field(default=100)
     mint_disable_melt_on_error: bool = Field(default=False)
+    mint_quote_ttl: Optional[int] = Field(
+        default=None,
+        ge=0,
+        title="Mint quote TTL",
+        description="Time-to-live in seconds for newly created mint quotes.",
+    )
+    melt_quote_ttl: Optional[int] = Field(
+        default=None,
+        ge=0,
+        title="Melt quote TTL",
+        description="Time-to-live in seconds for newly created melt quotes.",
+    )
 
     mint_regular_tasks_interval_seconds: int = Field(
         default=3600,
@@ -91,6 +103,7 @@ class MintWatchdogSettings(MintSettings):
 class MintDeprecationFlags(MintSettings):
     mint_inactivate_base64_keysets: bool = Field(default=False)
 
+
 class MintBackends(MintSettings):
     mint_lightning_backend: str = Field(default="")  # deprecated
     mint_backend_bolt11_sat: str = Field(default="")
@@ -108,7 +121,30 @@ class MintBackends(MintSettings):
 
 class MintLimits(MintSettings):
     mint_rate_limit: bool = Field(
-        default=False, title="Rate limit", description="IP-based rate limiter."
+        default=True,
+        title="Rate limit",
+        description="IP-based rate limiter.",
+    )
+    mint_rate_limit_proxy_trust: bool = Field(
+        default=True,
+        title="Trust proxy headers for rate limiting",
+        description=(
+            "Extract client IP from proxy headers (X-Forwarded-For,"
+            " CF-Connecting-IP) for rate limiting. Enable this if the mint"
+            " is behind a reverse proxy (Caddy, nginx) or CDN (Cloudflare)."
+            " Disable if the mint is directly exposed to the internet to"
+            " prevent clients from spoofing their IP via headers."
+        ),
+    )
+    mint_forwarded_allow_ips: str = Field(
+        default="127.0.0.1",
+        title="Forwarded-allow IPs",
+        description=(
+            "Comma-separated list of proxy IPs to trust for X-Forwarded-For"
+            " headers at the uvicorn level, or '*' to trust all."
+            " Only relevant when mint_rate_limit_proxy_trust is enabled."
+            " Set to '*' if your proxy's IP is dynamic or unknown."
+        ),
     )
     mint_global_rate_limit_per_minute: int = Field(
         default=60,
@@ -121,6 +157,11 @@ class MintLimits(MintSettings):
         gt=0,
         title="Transaction rate limit per minute",
         description="Number of requests an IP can make per minute to transaction endpoints.",
+    )
+    mint_quote_backend_check_rate_limit: int = Field(
+        default=10,
+        title="Quote backend check rate limit",
+        description="Minimum seconds between checks with the backend for unpaid mint quotes.",
     )
     mint_max_request_length: int = Field(
         default=1000,
@@ -317,6 +358,7 @@ class AuthSettings(MintSettings):
         ["POST", "/v1/mint/quote/bolt12"],
         ["POST", "/v1/mint/bolt11"],
         ["POST", "/v1/mint/bolt12"],
+        ["POST", "/v1/mint/bolt11/batch"],
         ["POST", "/v1/melt/bolt11"],
         ["POST", "/v1/melt/bolt12"],
     ]
@@ -326,6 +368,7 @@ class MintRedisCache(MintSettings):
     mint_redis_cache_enabled: bool = Field(default=False)
     mint_redis_cache_url: Optional[str] = Field(default=None)
     mint_redis_cache_ttl: Optional[int] = Field(default=60 * 60 * 24 * 7)  # 1 week
+    mint_redis_cache_cluster: bool = Field(default=False)
 
 
 class Settings(

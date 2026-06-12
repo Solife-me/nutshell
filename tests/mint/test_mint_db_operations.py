@@ -653,6 +653,67 @@ async def test_get_blind_signatures_by_melt_id_returns_signed(
 
 
 @pytest.mark.asyncio
+async def test_get_melt_quote_preserves_change_signatures_order(
+    wallet: Wallet, ledger: Ledger
+):
+    from cashu.core.crypto.b_dhke import step1_alice, step2_bob
+    from cashu.core.crypto.secp import PublicKey
+
+    amount = 8
+    keyset_id = ledger.keyset.id
+
+    mint_quote = await wallet.request_mint(64)
+    melt_quote = await ledger.melt_quote(
+        PostMeltQuoteRequest(request=mint_quote.request, unit="sat")
+    )
+    melt_id = melt_quote.quote
+
+    # Create 5 blinded messages
+    b_values = []
+    for i in range(5):
+        B, _ = step1_alice(f"melt_quote_change_{i}")
+        b_values.append(B.format().hex())
+
+    # Store them out of order of insertion, but with correct order_index
+    # We will insert index 4, 1, 3, 0, 2
+    insert_order = [4, 1, 3, 0, 2]
+    for idx in insert_order:
+        await ledger.crud.store_blinded_message(
+            db=ledger.db,
+            amount=amount,
+            b_=b_values[idx],
+            id=keyset_id,
+            melt_id=melt_id,
+            order_index=idx,
+        )
+
+        # Sign it right away so it is returned in change
+        priv = ledger.keyset.private_keys[amount]
+        _, e, s = step2_bob(PublicKey(bytes.fromhex(b_values[idx])), priv)
+        await ledger.crud.update_blinded_message_signature(
+            db=ledger.db,
+            amount=amount,
+            b_=b_values[idx],
+            c_=PublicKey(bytes.fromhex(b_values[idx])).format().hex(), # Mock C_ just to not be NULL
+            e=e.to_hex(),
+            s=s.to_hex()
+        )
+
+    # Act
+    quote_db = await ledger.crud.get_melt_quote(quote_id=melt_id, db=ledger.db)
+
+    # Assert: change contains the signed promises IN CORRECT ORDER
+    assert quote_db is not None
+    assert quote_db.change is not None
+    assert len(quote_db.change) == 5
+
+    # We check if we can reconstruct the original B_ mapping using the DB again (to verify test mock is valid)
+    # However we can just verify that C_ values matches what we inserted
+    # Since we mocked C_ to be the same as B_ in our test
+    for i in range(5):
+        assert quote_db.change[i].C_ == b_values[i], f"Change signature at index {i} is out of order"
+
+@pytest.mark.asyncio
 async def test_get_melt_quote_includes_change_signatures(
     wallet: Wallet, ledger: Ledger
 ):
@@ -819,7 +880,7 @@ async def test_concurrent_set_mint_quote_pending_same_quote(wallet: Wallet, ledg
     _ = await ledger.get_mint_quote(mint_quote.quote)
     # Get quote object
     quote = await ledger.crud.get_mint_quote(quote_id=mint_quote.quote, db=ledger.db)
-    
+
     results = await asyncio.gather(
         ledger.db_write._set_mint_quote_pending(quote.quote),
         ledger.db_write._set_mint_quote_pending(quote.quote),
@@ -845,7 +906,7 @@ async def test_concurrent_set_mint_quote_pending_different_quotes(wallet: Wallet
     await pay_if_regtest(mint_quote2.request)
     _ = await ledger.get_mint_quote(mint_quote1.quote)
     _ = await ledger.get_mint_quote(mint_quote2.quote)
-    
+
     results = await asyncio.gather(
         ledger.db_write._set_mint_quote_pending(mint_quote1.quote),
         ledger.db_write._set_mint_quote_pending(mint_quote2.quote),
@@ -866,7 +927,7 @@ async def test_concurrent_set_melt_quote_pending_same_quote(wallet: Wallet, ledg
         PostMeltQuoteRequest(request=mint_quote.request, unit="sat")
     )
     quote_db = await ledger.crud.get_melt_quote(quote_id=melt_quote.quote, db=ledger.db)
-    
+
     results = await asyncio.gather(
         ledger.db_write._set_melt_quote_pending(quote_db),
         ledger.db_write._set_melt_quote_pending(quote_db),
@@ -896,7 +957,7 @@ async def test_concurrent_set_melt_quote_pending_different_quotes(wallet: Wallet
     )
     quote_db1 = await ledger.crud.get_melt_quote(quote_id=melt_quote1.quote, db=ledger.db)
     quote_db2 = await ledger.crud.get_melt_quote(quote_id=melt_quote2.quote, db=ledger.db)
-    
+
     results = await asyncio.gather(
         ledger.db_write._set_melt_quote_pending(quote_db1),
         ledger.db_write._set_melt_quote_pending(quote_db2),
@@ -915,16 +976,16 @@ async def test_concurrent_swap_same_proofs(wallet: Wallet, ledger: Ledger):
     mint_quote = await wallet.request_mint(64)
     await pay_if_regtest(mint_quote.request)
     await wallet.mint(64, quote_id=mint_quote.quote)
-    
+
     secrets, rs, _ = await wallet.generate_n_secrets(2)
     outputs, _ = wallet._construct_outputs([32, 32], secrets, rs)
-    
+
     results = await asyncio.gather(
         ledger.swap(proofs=wallet.proofs, outputs=outputs),
         ledger.swap(proofs=wallet.proofs, outputs=outputs),
         return_exceptions=True
     )
-    
+
     success = sum(1 for r in results if not isinstance(r, Exception))
     errors = [r for r in results if isinstance(r, Exception)]
     assert success == 1, f"Expected 1 success, got {success}. Errors: {errors}"
@@ -942,16 +1003,16 @@ async def test_concurrent_swap_different_proofs(wallet: Wallet, ledger: Ledger):
     mint_quote = await wallet.request_mint(64)
     await pay_if_regtest(mint_quote.request)
     await wallet.mint(64, quote_id=mint_quote.quote, split=[32, 32])
-    
+
     proofs1 = wallet.proofs[:1]
     proofs2 = wallet.proofs[1:]
-    
+
     secrets1, rs1, _ = await wallet.generate_n_secrets(1)
     outputs1, _ = wallet._construct_outputs([32], secrets1, rs1)
-    
+
     secrets2, rs2, _ = await wallet.generate_n_secrets(1)
     outputs2, _ = wallet._construct_outputs([32], secrets2, rs2)
-    
+
     results = await asyncio.gather(
         ledger.swap(proofs=proofs1, outputs=outputs1),
         ledger.swap(proofs=proofs2, outputs=outputs2),

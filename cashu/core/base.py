@@ -425,6 +425,8 @@ class MintQuote(LedgerEvent):
     state: MintQuoteState
     created_time: Union[int, None] = None
     paid_time: Union[int, None] = None
+    issued_time: Union[int, None] = None
+    last_checked: Union[int, None] = None
     expiry: Optional[int] = None
     mint: Optional[str] = None
     privkey: Optional[str] = None
@@ -436,12 +438,20 @@ class MintQuote(LedgerEvent):
             #  SQLITE: row is timestamp (string)
             created_time = int(row["created_time"]) if row["created_time"] else None
             paid_time = int(row["paid_time"]) if row["paid_time"] else None
+            issued_time = int(row["issued_time"]) if "issued_time" in row.keys() and row["issued_time"] else None
+            last_checked = int(row["last_checked"]) if "last_checked" in row.keys() and row["last_checked"] else None
         except Exception:
             # POSTGRES: row is datetime.datetime
             created_time = (
                 int(row["created_time"].timestamp()) if row["created_time"] else None
             )
             paid_time = int(row["paid_time"].timestamp()) if row["paid_time"] else None
+            issued_time = (
+                int(row["issued_time"].timestamp()) if "issued_time" in row.keys() and row["issued_time"] else None
+            )
+            last_checked = (
+                int(row["last_checked"].timestamp()) if "last_checked" in row.keys() and row["last_checked"] else None
+            )
         return cls(
             quote=row["quote"],
             method=row["method"],
@@ -452,6 +462,8 @@ class MintQuote(LedgerEvent):
             state=MintQuoteState(row["state"]),
             created_time=created_time,
             paid_time=paid_time,
+            issued_time=issued_time,
+            last_checked=last_checked,
             pubkey=row["pubkey"] if "pubkey" in row.keys() else None,
             privkey=row["privkey"] if "privkey" in row.keys() else None,
         )
@@ -570,6 +582,10 @@ class Unit(Enum):
 class Amount:
     unit: Unit
     amount: int
+
+    def __post_init__(self):
+        if self.amount < 0:
+            raise ValueError(f"Amount cannot be negative: {self.amount}")
 
     def to(self, to_unit: Unit, round: Optional[str] = None):
         if self.unit == to_unit:
@@ -1459,3 +1475,26 @@ class MintBalanceLogEntry(BaseModel):
             keyset_fees_paid=Amount(Unit[row["unit"]], row["keyset_fees_paid"]),
             time=row["time"],
         )
+
+
+class Transport(BaseModel):
+    t: str  # type
+    a: str  # target
+    g: Optional[List[List[str]]] = None  # tags
+
+
+class NUT10Option(BaseModel):
+    k: str  # kind
+    d: str  # data
+    t: Optional[List[List[str]]] = None  # tags
+
+
+class PaymentRequest(BaseModel):
+    i: Optional[str] = None  # payment id
+    a: Optional[int] = None  # amount
+    u: Optional[str] = None  # unit
+    s: Optional[bool] = None  # single use
+    m: Optional[List[str]] = None  # mints
+    d: Optional[str] = None  # description
+    t: Optional[List[Transport]] = None  # transports
+    nut10: Optional[NUT10Option] = None
