@@ -49,4 +49,4 @@ Only publish the mint URL if you intend other wallets to use it. If the mint is 
 - If Core Lightning is selected and dependency health fails, confirm CLN is installed, started, and reachable on the same StartOS server.
 - If BOLT12 requests fail with CLN selected, confirm your CLN version and configuration support offers.
 - If payments fail, check backend liquidity, channel state, fee limits, and whether the invoice or offer has expired.
-- If receiving tokens fails with `proofs are pending` after an interrupted swap, stop Nutshell and run the Repair Pending Swaps action in inspect mode, then repair mode if stale swap locks are reported.
+- If receiving tokens fails with `proofs are pending` after an interrupted swap or melt, stop Nutshell and run the Repair Pending Proofs action in inspect mode. Use repair mode for recoverable locks. Use force rollback only after confirming an outgoing Lightning payment did not settle.
