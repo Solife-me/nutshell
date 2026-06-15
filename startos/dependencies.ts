@@ -18,7 +18,7 @@ export const dependenciesForBackend = (backend: string | null | undefined) => {
       {
         id: 'c-lightning',
         kind: 'running' as const,
-        versionRange: '>=25.12.1:8',
+        versionRange: '*',
         healthChecks: [],
       },
     ]

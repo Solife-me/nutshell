@@ -4,10 +4,10 @@ import { dependenciesForBackend } from '../dependencies'
 import { storeJson } from '../fileModels/store.json'
 
 export const current = VersionInfo.of({
-  version: '0.20.0:3',
+  version: '0.20.0:6',
   releaseNotes: {
     en_US:
-      'Add CLN-backed BOLT12 mint and melt support while keeping BOLT12 disabled for non-CLN Lightning backends.',
+      'Allow any installed Core Lightning package version and use the internal CLN REST HTTP endpoint.',
   },
   migrations: {
     up: async ({ effects }) => {

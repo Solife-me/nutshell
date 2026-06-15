@@ -22,7 +22,7 @@ const backendEnv = (
         MINT_BACKEND_BOLT11_SAT: 'CLNRestWallet',
         MINT_BACKEND_BOLT12_SAT: 'CLNRestWallet',
         MINT_CLNREST_RUNE: '/mnt/cln/.commando-env',
-        MINT_CLNREST_URL: 'https://c-lightning.startos:3010',
+        MINT_CLNREST_URL: 'http://c-lightning.startos:3010',
       }
     case 'lnbits':
       return {
