@@ -4,10 +4,10 @@ import { dependenciesForBackend } from '../dependencies'
 import { storeJson } from '../fileModels/store.json'
 
 export const current = VersionInfo.of({
-  version: '0.20.0:6',
+  version: '0.20.0:7',
   releaseNotes: {
     en_US:
-      'Allow any installed Core Lightning package version and use the internal CLN REST HTTP endpoint.',
+      'Add a StartOS maintenance action to inspect and repair stale pending swap locks after interrupted receive or swap operations.',
   },
   migrations: {
     up: async ({ effects }) => {
