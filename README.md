@@ -206,7 +206,10 @@ docker run -d -p 3338:3338 --name nutshell -e MINT_BACKEND_BOLT11_SAT=FakeWallet
 
 ## StartOS
 
-This repository includes a StartOS 0.4 package wrapper. Build the package with:
+This repository includes a StartOS 0.4 package wrapper targeting StartOS
+0.4.0-beta.10 or newer. The checkout must be inside an initialized
+[StartOS packaging workspace](https://docs.start9.com/packaging/0.4.0.x/environment-setup.html).
+Build the package with:
 
 ```bash
 make s9pk
