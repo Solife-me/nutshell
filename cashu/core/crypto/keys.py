@@ -130,7 +130,7 @@ def is_base64_keyset_id(keyset_id: str) -> bool:
 
     Base64 keyset IDs:
     - Don't start with "00" or "01" version prefix
-    - Are typically 12 characters long
+    - Are exactly 12 characters long
     - Are valid base64 strings
 
     Args:
@@ -139,13 +139,19 @@ def is_base64_keyset_id(keyset_id: str) -> bool:
     Returns:
         True if the keyset ID is base64 format, False otherwise
     """
-    # If it starts with a known version prefix, it's not base64
-    if keyset_id.startswith("00") or keyset_id.startswith("01"):
+    # Legacy IDs are the first 12 characters of a Base64-encoded digest.
+    if len(keyset_id) != 12:
         return False
 
-    # Try to decode as base64 to confirm
+    # If it starts with a known version prefix, it's not Base64.
+    if keyset_id.startswith(("00", "01")):
+        return False
+
+    # Use b64decode with URL-safe alternative characters instead of
+    # urlsafe_b64decode because only b64decode supports validate=True. This
+    # accepts both Base64 alphabets while strictly rejecting malformed IDs.
     try:
-        base64.b64decode(keyset_id, validate=True)
+        base64.b64decode(keyset_id, altchars=b"-_", validate=True)
         return True
     except Exception:
         return False
@@ -168,6 +174,27 @@ def get_keyset_id_version(keyset_id: str) -> str:
         return "base64"
 
     return keyset_id[:2]
+
+
+def is_supported_keyset_version(keyset_id: str) -> bool:
+    """
+    Check if the keyset ID's version is supported by this wallet.
+    Supported versions:
+    - "base64" (pre-0.15.0 legacy keysets)
+    - "00" (legacy keysets)
+    - "01" (v2 keysets)
+    """
+    try:
+        version = get_keyset_id_version(keyset_id)
+        if version == "base64":
+            return True
+        # If the version prefix is not a 2-hex-digit string, it represents a legacy keyset ID.
+        is_hex_version = len(version) == 2 and all(c in "0123456789abcdefABCDEF" for c in version)
+        if not is_hex_version:
+            return True
+        return version in ("00", "01")
+    except Exception:
+        return False
 
 
 def is_keyset_id_v2(keyset_id: str) -> bool:

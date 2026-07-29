@@ -226,6 +226,11 @@ async def test_mint_quote_set_pending(wallet: Wallet, ledger: Ledger):
     assert quote is not None
     assert quote.state == MintQuoteState.paid
 
+    # Legacy paid quotes may not have a payment timestamp. Moving through
+    # PENDING and back to PAID must not invent one during rollback.
+    quote.paid_time = None
+    await ledger.crud.update_mint_quote(quote=quote, db=ledger.db)
+
     previous_state = MintQuoteState.paid
     await ledger.db_write._set_mint_quote_pending(quote.quote)
     quote = await ledger.crud.get_mint_quote(quote_id=mint_quote.quote, db=ledger.db)
@@ -244,6 +249,7 @@ async def test_mint_quote_set_pending(wallet: Wallet, ledger: Ledger):
     assert quote is not None
     assert quote.state == previous_state
     assert quote.state == MintQuoteState.paid
+    assert quote.paid_time is None
 
     # # set paid and mint again
     # quote.state = MintQuoteState.paid
@@ -272,8 +278,9 @@ async def test_db_events_add_client(wallet: Wallet, ledger: Ledger):
 
     # add event client
     websocket_mock = AsyncMock(spec=WebSocket)
+    websocket_mock.receive.return_value = {"type": "websocket.disconnect"}
     client = ledger.events.add_client(websocket_mock, ledger.db, ledger.crud)
-    asyncio.create_task(client.start())
+    task = asyncio.create_task(client.start())
     await asyncio.sleep(0.1)
     websocket_mock.accept.assert_called_once()
 
@@ -295,6 +302,13 @@ async def test_db_events_add_client(wallet: Wallet, ledger: Ledger):
 
     # remove subscription
     client.remove_subscription("subId")
+    task.cancel()
+    try:
+        await task
+    except Exception:
+        pass
+    except asyncio.CancelledError:
+        pass
 
 
 @pytest.mark.asyncio

@@ -114,3 +114,27 @@ async def m002_add_balance_to_keysets_and_log_table(db: Database):
                 ADD COLUMN fees_paid INTEGER NOT NULL DEFAULT 0
             """
         )
+
+
+async def m003_add_final_expiry_to_keysets(db: Database):
+    """
+    Add the final_expiry column to the auth keysets table for keysets v2 support.
+    """
+    async with db.connect() as conn:
+        await conn.execute(
+            f"""
+                ALTER TABLE {db.table_with_schema('keysets')}
+                ADD COLUMN final_expiry INTEGER NULL
+            """
+        )
+
+
+async def m004_remove_dleq_from_promises(db: Database):
+    """Remove deterministically generated DLEQ proofs from persisted promises."""
+    async with db.connect() as conn:
+        await conn.execute(
+            f"ALTER TABLE {db.table_with_schema('promises')} DROP COLUMN dleq_e"
+        )
+        await conn.execute(
+            f"ALTER TABLE {db.table_with_schema('promises')} DROP COLUMN dleq_s"
+        )

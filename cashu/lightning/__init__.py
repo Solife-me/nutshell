@@ -8,6 +8,7 @@ from .lnbits import LNbitsWallet  # noqa: F401
 from .lnd_grpc.lnd_grpc import LndRPCWallet  # noqa: F401
 from .lndrest import LndRestWallet  # noqa: F401
 from .phoenixd import PhoenixdWallet  # noqa: F401
+from .sparkl2 import SparkL2Wallet  # noqa: F401
 from .strike import StrikeWallet  # noqa: F401
 
 backend_settings = [

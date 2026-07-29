@@ -6,6 +6,21 @@ from cashu.mint import migrations as mint_migrations
 
 
 @pytest.mark.asyncio
+async def test_m038_remove_dleq_from_promises(tmp_path):
+    db = Database("mint", str(tmp_path / "mint"))
+    await migrate_databases(db, mint_migrations)
+
+    async with db.connect() as conn:
+        columns = await conn.fetchall(
+            f"PRAGMA table_info({db.table_with_schema('promises')})"
+        )
+
+    column_names = {column["name"] for column in columns}
+    assert "dleq_e" not in column_names
+    assert "dleq_s" not in column_names
+
+
+@pytest.mark.asyncio
 async def test_m029_witness_cleanup():
     db = Database("mint", "./test_data/mig_witness_cleanup")
 
@@ -72,3 +87,47 @@ async def test_m029_witness_cleanup():
             f"SELECT witness FROM {db.table_with_schema('proofs_pending')} WHERE secret = 's_pend_short'"
         )
         assert row["witness"] == short_witness
+
+
+@pytest.mark.asyncio
+async def test_auth_m003_migration():
+    import os
+    import shutil
+
+    from cashu.core.base import MintKeyset
+    from cashu.mint.auth import migrations as auth_migrations
+    from cashu.mint.crud import LedgerCrudSqlite
+
+    db_path = "./test_data/mig_auth"
+    if os.path.exists(db_path):
+        shutil.rmtree(db_path)
+    db = Database("auth", db_path)
+
+    # Migrate auth database to latest
+    await migrate_databases(db, auth_migrations)
+
+    # Verify that keysets table now has the final_expiry column
+    async with db.connect() as conn:
+        columns = await conn.fetchall(
+            f"PRAGMA table_info({db.table_with_schema('keysets')})"
+        )
+        assert any(col["name"] == "final_expiry" for col in columns)
+
+    # Verify that we can successfully store a keyset (which uses the final_expiry column)
+    crud = LedgerCrudSqlite()
+    keyset = MintKeyset(
+        seed="test_seed",
+        derivation_path="m/0'/0'/0'",
+        version="0.15.0",
+        final_expiry=123456789,
+    )
+    await crud.store_keyset(db=db, keyset=keyset)
+
+    # Verify that the keyset was stored and final_expiry value is set correctly
+    retrieved = await crud.get_keyset(db=db, id=keyset.id)
+    assert len(retrieved) == 1
+    assert retrieved[0].final_expiry == 123456789
+
+    # Clean up
+    if os.path.exists(db_path):
+        shutil.rmtree(db_path)

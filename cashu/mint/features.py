@@ -18,10 +18,10 @@ from ..core.nuts.nuts import (
     FEE_RETURN_NUT,
     HTLC_NUT,
     MELT_NUT,
+    METHOD_BOLT12_NUT,
     MINT_NUT,
     MINT_QUOTE_SIGNATURE_NUT,
     MPP_NUT,
-    METHOD_BOLT12_NUT,
     P2PK_NUT,
     RESTORE_NUT,
     SCRIPT_NUT,
@@ -85,7 +85,9 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
         mint_method_settings: List[MintMethodSetting] = []
         for method, unit_dict in self.backends.items():
             for unit in unit_dict.keys():
-                mint_setting = MintMethodSetting(method=method.name, unit=unit.name)
+                mint_setting = MintMethodSetting(
+                    method=method.name, unit=unit.name, method_name=method.name
+                )
                 if settings.mint_max_mint_bolt11_sat:
                     mint_setting.max_amount = settings.mint_max_mint_bolt11_sat
                     mint_setting.min_amount = 0
@@ -96,7 +98,9 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
         melt_method_settings: List[MeltMethodSetting] = []
         for method, unit_dict in self.backends.items():
             for unit in unit_dict.keys():
-                melt_setting = MeltMethodSetting(method=method.name, unit=unit.name)
+                melt_setting = MeltMethodSetting(
+                    method=method.name, unit=unit.name, method_name=method.name
+                )
                 if settings.mint_max_melt_bolt11_sat:
                     melt_setting.max_amount = settings.mint_max_melt_bolt11_sat
                     melt_setting.min_amount = 0

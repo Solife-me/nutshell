@@ -183,8 +183,6 @@ class LedgerCrud(ABC):
         amount: int,
         b_: str,
         c_: str,
-        e: str = "",
-        s: str = "",
         conn: Optional[Connection] = None,
     ) -> None: ...
 
@@ -194,6 +192,7 @@ class LedgerCrud(ABC):
         *,
         db: Database,
         melt_id: str,
+        signed: bool = False,
         conn: Optional[Connection] = None,
     ) -> List[BlindedMessage]: ...
 
@@ -372,12 +371,14 @@ class LedgerCrudSqlite(LedgerCrud):
         *,
         db: Database,
         melt_id: str,
+        signed: bool = False,
         conn: Optional[Connection] = None,
     ) -> List[BlindedMessage]:
         rows = await (conn or db).fetchall(
             f"""
             SELECT * from {db.table_with_schema("promises")}
-            WHERE melt_quote = :melt_id AND c_ IS NULL
+            WHERE melt_quote = :melt_id
+                AND c_ IS {'NOT NULL' if signed else 'NULL'}
             ORDER BY order_index ASC
             """,
             {"melt_id": melt_id},
@@ -426,8 +427,6 @@ class LedgerCrudSqlite(LedgerCrud):
         amount: int,
         b_: str,
         c_: str,
-        e: str = "",
-        s: str = "",
         conn: Optional[Connection] = None,
     ) -> None:
         existing = await (conn or db).fetchone(
@@ -443,15 +442,13 @@ class LedgerCrudSqlite(LedgerCrud):
         await (conn or db).execute(
             f"""
             UPDATE {db.table_with_schema("promises")}
-            SET amount = :amount, c_ = :c_, dleq_e = :dleq_e, dleq_s = :dleq_s, signed_at = :signed_at
+            SET amount = :amount, c_ = :c_, signed_at = :signed_at
             WHERE b_ = :b_;
             """,
             {
                 "b_": b_,
                 "amount": amount,
                 "c_": c_,
-                "dleq_e": e,
-                "dleq_s": s,
                 "signed_at": db.to_timestamp(db.timestamp_now_str()),
             },
         )
@@ -610,8 +607,8 @@ class LedgerCrudSqlite(LedgerCrud):
         await (conn or db).execute(
             f"""
             INSERT INTO {db.table_with_schema("mint_quotes")}
-            (quote, method, request, checking_id, unit, amount, state, created_time, paid_time, issued_time, last_checked, pubkey)
-            VALUES (:quote, :method, :request, :checking_id, :unit, :amount, :state, :created_time, :paid_time, :issued_time, :last_checked, :pubkey)
+            (quote, method, request, checking_id, unit, amount, state, created_time, paid_time, issued_time, last_checked, pubkey, amount_paid, amount_issued, updated_at)
+            VALUES (:quote, :method, :request, :checking_id, :unit, :amount, :state, :created_time, :paid_time, :issued_time, :last_checked, :pubkey, :amount_paid, :amount_issued, :updated_at)
             """,
             {
                 "quote": quote.quote,
@@ -640,6 +637,13 @@ class LedgerCrudSqlite(LedgerCrud):
                 if quote.last_checked
                 else None,
                 "pubkey": quote.pubkey or "",
+                "amount_paid": quote.amount_paid,
+                "amount_issued": quote.amount_issued,
+                "updated_at": db.to_timestamp(
+                    db.timestamp_from_seconds(quote.updated_at) or ""
+                )
+                if quote.updated_at
+                else None,
             },
         )
 
@@ -701,7 +705,7 @@ class LedgerCrudSqlite(LedgerCrud):
         conn: Optional[Connection] = None,
     ) -> None:
         await (conn or db).execute(
-            f"UPDATE {db.table_with_schema('mint_quotes')} SET state = :state, paid_time = :paid_time, issued_time = :issued_time, last_checked = :last_checked WHERE quote = :quote",
+            f"UPDATE {db.table_with_schema('mint_quotes')} SET state = :state, paid_time = :paid_time, issued_time = :issued_time, last_checked = :last_checked, amount_paid = :amount_paid, amount_issued = :amount_issued, updated_at = :updated_at WHERE quote = :quote",
             {
                 "state": quote.state.value,
                 "paid_time": db.to_timestamp(
@@ -718,6 +722,13 @@ class LedgerCrudSqlite(LedgerCrud):
                     db.timestamp_from_seconds(quote.last_checked) or ""
                 )
                 if quote.last_checked
+                else None,
+                "amount_paid": quote.amount_paid,
+                "amount_issued": quote.amount_issued,
+                "updated_at": db.to_timestamp(
+                    db.timestamp_from_seconds(quote.updated_at) or ""
+                )
+                if quote.updated_at
                 else None,
                 "quote": quote.quote,
             },
@@ -758,8 +769,8 @@ class LedgerCrudSqlite(LedgerCrud):
         await (conn or db).execute(
             f"""
             INSERT INTO {db.table_with_schema("melt_quotes")}
-            (quote, method, request, checking_id, unit, amount, fee_reserve, state, paid, created_time, paid_time, fee_paid, proof, expiry)
-            VALUES (:quote, :method, :request, :checking_id, :unit, :amount, :fee_reserve, :state, :paid, :created_time, :paid_time, :fee_paid, :proof, :expiry)
+            (quote, method, request, checking_id, unit, amount, fee_reserve, state, created_time, paid_time, fee_paid, proof, expiry)
+            VALUES (:quote, :method, :request, :checking_id, :unit, :amount, :fee_reserve, :state, :created_time, :paid_time, :fee_paid, :proof, :expiry)
             """,
             {
                 "quote": quote.quote,
@@ -770,7 +781,6 @@ class LedgerCrudSqlite(LedgerCrud):
                 "amount": quote.amount,
                 "fee_reserve": quote.fee_reserve or 0,
                 "state": quote.state.value,
-                "paid": quote.paid,  # this is deprecated! we need to store it because we have a NOT NULL constraint | we could also remove the column but sqlite doesn't support that (we would have to make a new table)
                 "created_time": db.to_timestamp(
                     db.timestamp_from_seconds(quote.created_time) or ""
                 ),

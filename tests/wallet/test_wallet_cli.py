@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Tuple
 
 import bolt11
@@ -6,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from cashu.core.base import TokenV4
+from cashu.core.p2pk import P2PKSecret
 from cashu.core.settings import settings
 from cashu.wallet.cli.cli import cli
 from cashu.wallet.wallet import Wallet
@@ -687,13 +689,96 @@ def test_send_with_lock_and_refund(mint, cli_prefix):
     assert fake_refund_pubkey in token.token[0].proofs[0].secret
 
 
+def test_send_with_lock_and_timelock(mint, cli_prefix):
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [*cli_prefix, "locks"],
+    )
+    assert result.exception is None
+    lock = None
+    for word in result.output.split(" "):
+        word = word.strip()
+        if word.startswith("P2PK:"):
+            lock = word
+            break
+    assert lock is not None, "no lock found"
+
+    before = int(time.time())
+    result = runner.invoke(
+        cli,
+        [*cli_prefix, "send", "10", "--lock", lock, "--timelock", "5"],
+    )
+    after = int(time.time())
+    assert result.exception is None
+    print("test_send_with_lock_and_timelock", result.output)
+    token_str = result.output.split("\n")[0]
+    assert "cashuB" in token_str, "output does not have a token"
+    token = TokenV4.deserialize(token_str).to_tokenv3()
+    secret = P2PKSecret.deserialize(token.token[0].proofs[0].secret)
+    assert secret.locktime is not None
+    assert before + 5 <= secret.locktime <= after + 5
+
+
+def test_send_with_lock_uses_locktime_delta_seconds_by_default(mint, cli_prefix):
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [*cli_prefix, "locks"],
+    )
+    assert result.exception is None
+    lock = None
+    for word in result.output.split(" "):
+        word = word.strip()
+        if word.startswith("P2PK:"):
+            lock = word
+            break
+    assert lock is not None, "no lock found"
+
+    before = int(time.time())
+    result = runner.invoke(
+        cli,
+        [*cli_prefix, "send", "10", "--lock", lock],
+    )
+    after = int(time.time())
+    assert result.exception is None
+    print(
+        "test_send_with_lock_uses_locktime_delta_seconds_by_default", result.output
+    )
+    token_str = result.output.split("\n")[0]
+    assert "cashuB" in token_str, "output does not have a token"
+    token = TokenV4.deserialize(token_str).to_tokenv3()
+    secret = P2PKSecret.deserialize(token.token[0].proofs[0].secret)
+    assert secret.locktime is not None
+    assert (
+        before + settings.locktime_delta_seconds
+        <= secret.locktime
+        <= after + settings.locktime_delta_seconds
+    )
+
+
+def mint_tokens(runner, cli_prefix, amount: str):
+    result = runner.invoke(
+        cli,
+        [*cli_prefix, "invoice", "-n", amount],
+    )
+    assert result.exception is None
+    invoice, invoice_id = get_bolt11_and_invoice_id_from_invoice_command(result.output)
+    asyncio.run(pay_if_regtest(invoice))
+    result = runner.invoke(
+        cli,
+        [*cli_prefix, "invoice", amount, "--id", invoice_id],
+    )
+    assert result.exception is None
+    return result
+
+
 def test_proofs_basic(cli_prefix):
     """Test basic proofs command functionality"""
     runner = CliRunner(mix_stderr=False)  # Separate stdout/stderr, as we want to verify only stdout
 
     # First create some tokens like other tests do
-    result = runner.invoke(cli, [*cli_prefix, "invoice", "64"])
-    assert result.exception is None
+    mint_tokens(runner, cli_prefix, "64")
 
     # Verify wallet has balance
     wallet = asyncio.run(init_wallet())
@@ -724,8 +809,7 @@ def test_proofs_json_structure(cli_prefix):
     runner = CliRunner(mix_stderr=False)
 
     # First create some tokens
-    result = runner.invoke(cli, [*cli_prefix, "invoice", "64"])
-    assert result.exception is None
+    mint_tokens(runner, cli_prefix, "64")
 
     # Verify wallet has balance
     wallet = asyncio.run(init_wallet())
@@ -756,8 +840,7 @@ def test_proofs_with_no_dleq_flag(cli_prefix):
     runner = CliRunner(mix_stderr=False)
 
     # First create some tokens
-    result = runner.invoke(cli, [*cli_prefix, "invoice", "64"])
-    assert result.exception is None
+    mint_tokens(runner, cli_prefix, "64")
 
     # Verify wallet has balance
     wallet = asyncio.run(init_wallet())
@@ -799,8 +882,7 @@ def test_proofs_with_keyset_filter(cli_prefix):
     runner = CliRunner(mix_stderr=False)
 
     # First create some tokens
-    result = runner.invoke(cli, [*cli_prefix, "invoice", "64"])
-    assert result.exception is None
+    mint_tokens(runner, cli_prefix, "64")
 
     # Verify wallet has balance
     wallet = asyncio.run(init_wallet())
@@ -861,8 +943,7 @@ def test_proofs_with_all_flag(cli_prefix):
     runner = CliRunner(mix_stderr=False)
 
     # Create some tokens first so we have proofs to list
-    result = runner.invoke(cli, [*cli_prefix, "invoice", "64"])
-    assert result.exit_code == 0
+    mint_tokens(runner, cli_prefix, "64")
     # Send some, in order to 'reserve' the tokens such that they are only included if --all is passed
     result = runner.invoke(cli, [*cli_prefix, "send", "12"])
     assert result.exit_code == 0
