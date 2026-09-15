@@ -13,9 +13,11 @@ from cashu.core.base import (
     Unit,
 )
 from cashu.core.errors import (
+    InvoiceAlreadyPaidError,
     LightningPaymentFailedError,
     OutputsAlreadySignedError,
     OutputsArePendingError,
+    QuotePendingError,
 )
 from cashu.core.models import PostMeltQuoteRequest, PostMintQuoteRequest
 from cashu.core.settings import settings
@@ -25,7 +27,6 @@ from cashu.wallet.wallet import Wallet
 from tests.conftest import SERVER_ENDPOINT
 from tests.helpers import (
     get_real_invoice,
-    is_deprecated_api_only,
     is_fake,
     is_regtest,
     pay_if_regtest,
@@ -56,8 +57,8 @@ def assert_amt(proofs: List[Proof], expected: int):
 async def wallet(ledger: Ledger):
     wallet1 = await Wallet.with_db(
         url=SERVER_ENDPOINT,
-        db="test_data/wallet_mint_api_deprecated",
-        name="wallet_mint_api_deprecated",
+        db="test_data/wallet_mint_melt",
+        name="wallet_mint_melt",
     )
     await wallet1.load_mint()
     yield wallet1
@@ -99,8 +100,8 @@ async def create_pending_melts(
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not is_fake or is_deprecated_api_only,
-    reason="only fakewallet and non-deprecated api",
+    not is_fake,
+    reason="only fakewallet",
 )
 async def test_pending_melt_quote_outputs_registration_regression(
     wallet, ledger: Ledger
@@ -160,8 +161,8 @@ async def test_pending_melt_quote_outputs_registration_regression(
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not is_fake or is_deprecated_api_only,
-    reason="only fakewallet and non-deprecated api",
+    not is_fake,
+    reason="only fakewallet",
 )
 async def test_settled_melt_quote_outputs_registration_regression(
     wallet, ledger: Ledger
@@ -192,8 +193,9 @@ async def test_settled_melt_quote_outputs_registration_regression(
         change_rs,
         change_derivation_paths,
     ) = await wallet.generate_n_secrets(n_change_outputs, skip_bump=True)
+    # amount 0 is what wallets send for blank outputs; the mint must accept it
     change_outputs, change_rs = wallet._construct_outputs(
-        n_change_outputs * [1], change_secrets, change_rs
+        n_change_outputs * [0], change_secrets, change_rs
     )
     await assert_err(
         ledger.melt(proofs=proofs1, quote=melt_quote1.quote, outputs=change_outputs),
@@ -218,8 +220,8 @@ async def test_settled_melt_quote_outputs_registration_regression(
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not is_fake or is_deprecated_api_only,
-    reason="only fakewallet and non-deprecated api",
+    not is_fake,
+    reason="only fakewallet",
 )
 async def test_melt_quote_reuse_same_outputs(wallet, ledger: Ledger):
     """Verify that if the same outputs are used in two melt requests,
@@ -407,29 +409,27 @@ async def test_melt_lightning_pay_invoice_failed_failed(ledger: Ledger, wallet: 
     except LightningPaymentFailedError:
         pass
 
-    settings.fakewallet_payment_state = PaymentResult.UNKNOWN.name
-    settings.fakewallet_pay_invoice_state = PaymentResult.FAILED.name
-    try:
-        await ledger.melt(proofs=wallet.proofs, quote=quote_id)
-        raise AssertionError("Expected LightningPaymentFailedError")
-    except LightningPaymentFailedError:
-        pass
 
-    settings.fakewallet_payment_state = PaymentResult.FAILED.name
-    settings.fakewallet_pay_invoice_state = PaymentResult.UNKNOWN.name
-    try:
-        await ledger.melt(proofs=wallet.proofs, quote=quote_id)
-        raise AssertionError("Expected LightningPaymentFailedError")
-    except LightningPaymentFailedError:
-        pass
+@pytest.mark.asyncio
+@pytest.mark.skipif(is_regtest, reason="only fake wallet")
+async def test_melt_lightning_unknown_status_keeps_proofs_pending(
+    ledger: Ledger, wallet: Wallet
+):
+    mint_quote = await wallet.request_mint(64)
+    await ledger.get_mint_quote(mint_quote.quote)
+    await wallet.mint(64, quote_id=mint_quote.quote)
+    invoice = "lnbcrt620n1pn0r3vepp5zljn7g09fsyeahl4rnhuy0xax2puhua5r3gspt7ttlfrley6valqdqqcqzzsxqyz5vqsp577h763sel3q06tfnfe75kvwn5pxn344sd5vnays65f9wfgx4fpzq9qxpqysgqg3re9afz9rwwalytec04pdhf9mvh3e2k4r877tw7dr4g0fvzf9sny5nlfggdy6nduy2dytn06w50ls34qfldgsj37x0ymxam0a687mspp0ytr8"
+    quote_id = (
+        await ledger.melt_quote(PostMeltQuoteRequest(unit="sat", request=invoice))
+    ).quote
 
     settings.fakewallet_payment_state = PaymentResult.UNKNOWN.name
     settings.fakewallet_pay_invoice_state = PaymentResult.UNKNOWN.name
-    try:
-        await ledger.melt(proofs=wallet.proofs, quote=quote_id)
-        raise AssertionError("Expected LightningPaymentFailedError")
-    except LightningPaymentFailedError:
-        pass
+    response = await ledger.melt(proofs=wallet.proofs, quote=quote_id)
+
+    assert response.state == MeltQuoteState.pending.value
+    states = await ledger.db_read.get_proofs_states([p.Y for p in wallet.proofs])
+    assert all(state.pending for state in states)
 
 
 @pytest.mark.asyncio
@@ -595,8 +595,6 @@ async def test_set_melt_quote_pending_without_checking_id(ledger: Ledger):
 @pytest.mark.asyncio
 async def test_set_melt_quote_pending_prevents_duplicate_checking_id(ledger: Ledger):
     """Test that setting a melt quote as pending fails if another quote with same checking_id is already pending."""
-    from cashu.core.errors import TransactionError
-
     checking_id = "test_checking_id_duplicate"
 
     quote1 = MeltQuote(
@@ -635,9 +633,10 @@ async def test_set_melt_quote_pending_prevents_duplicate_checking_id(ledger: Led
     # Attempt to set the second quote as pending should fail
     try:
         await ledger.db_write._set_melt_quote_pending(quote=quote2)
-        raise AssertionError("Expected TransactionError")
-    except TransactionError as e:
+        raise AssertionError("Expected QuotePendingError")
+    except QuotePendingError as e:
         assert "Melt quote already paid or pending." in str(e)
+        assert e.code == 20005
 
     # Verify the second quote is still unpaid
     quote2_db = await ledger.crud.get_melt_quote(
@@ -785,7 +784,6 @@ async def test_mint_pay_with_duplicate_checking_id(wallet):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(is_deprecated_api_only, reason="Can't run on the deprecated API")
 async def test_melt_race_condition_fixed(wallet: Wallet, ledger: Ledger):
     import asyncio
 
@@ -916,8 +914,8 @@ async def test_internal_melt_failure_unsets_pending(ledger: Ledger, wallet: Wall
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not is_fake or is_deprecated_api_only,
-    reason="only fakewallet and non-deprecated api",
+    not is_fake,
+    reason="only fakewallet",
 )
 @pytest.mark.parametrize(
     "fee_paid_sat_offset",
@@ -939,8 +937,7 @@ async def test_melt_early_return_leaves_no_orphan_blank_outputs(
     Both parametrize cases hit the same early-return branch:
       - offset == 0  → overpaid_fee == 0  (fee exactly matched reserve)
       - offset > 0   → overpaid_fee < 0   (backend took more than the
-        reserve, e.g. an LNbits backend skimming a service fee on top
-        of the routing fee)
+        reserve due to a service fee on top of the routing fee)
     """
     settings.fakewallet_payment_state = PaymentResult.SETTLED.name
     settings.fakewallet_pay_invoice_state = ""
@@ -991,3 +988,24 @@ async def test_melt_early_return_leaves_no_orphan_blank_outputs(
         f"Expected no orphan blank outputs for melt {melt_quote.quote}, "
         f"got {len(orphans)} with B_s {[o.B_ for o in orphans]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_prepare_melt_rejects_already_paid_quote(ledger: Ledger):
+    """_prepare_melt runs before the locked guard, so it must report the paid
+    state with its own code rather than a generic transaction error."""
+    quote = MeltQuote(
+        quote="quote_id_already_paid",
+        method="bolt11",
+        request="lnbcfake",
+        checking_id="checking_id_already_paid",
+        unit="sat",
+        state=MeltQuoteState.paid,
+        amount=100,
+        fee_reserve=1,
+    )
+    await ledger.crud.store_melt_quote(quote=quote, db=ledger.db)
+
+    with pytest.raises(InvoiceAlreadyPaidError) as exc_info:
+        await ledger._prepare_melt(proofs=[], quote=quote.quote)
+    assert exc_info.value.code == 20006

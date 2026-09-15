@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Union
 
 from ..core.base import Method
+from ..core.json_rpc.base import JSONRPCSubscriptionKinds
 from ..core.mint_info import MintInfo
 from ..core.models import (
     MeltMethodSetting,
@@ -18,7 +19,6 @@ from ..core.nuts.nuts import (
     FEE_RETURN_NUT,
     HTLC_NUT,
     MELT_NUT,
-    METHOD_BOLT12_NUT,
     MINT_NUT,
     MINT_QUOTE_SIGNATURE_NUT,
     MPP_NUT,
@@ -35,12 +35,7 @@ _VERSION_PREFIX = "Nutshell"
 _SUPPORTED = "supported"
 _METHOD = "method"
 _UNIT = "unit"
-_BOLT11 = "bolt11"
-_MPP = "mpp"
 _COMMANDS = "commands"
-_BOLT11_MINT_QUOTE = "bolt11_mint_quote"
-_BOLT11_MELT_QUOTE = "bolt11_melt_quote"
-_PROOF_STATE = "proof_state"
 _PROTECTED_ENDPOINTS = "protected_endpoints"
 _BAT_MAX_MINT = "bat_max_mint"
 _OPENID_DISCOVERY = "openid_discovery"
@@ -68,6 +63,7 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
             tos_url=settings.mint_info_tos_url,
             motd=settings.mint_info_motd,
             time=None,
+            max_array_length=settings.mint_max_request_length,
         )
 
     @property
@@ -130,8 +126,6 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
         mint_features[DLEQ_NUT] = supported_dict
         mint_features[HTLC_NUT] = supported_dict
         mint_features[MINT_QUOTE_SIGNATURE_NUT] = supported_dict
-        if Method.bolt12 in self.backends:
-            mint_features[METHOD_BOLT12_NUT] = supported_dict
         return mint_features
 
     def add_batch_features(
@@ -169,13 +163,16 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
         }
         # we check the backend to see if "bolt11_mint_quote" is supported as well
         for method, unit_dict in self.backends.items():
-            if method == Method[_BOLT11]:
+            if method == Method.bolt11:
                 for unit in unit_dict.keys():
                     websocket_features[_SUPPORTED].append(
                         {
                             _METHOD: method.name,
                             _UNIT: unit.name,
-                            _COMMANDS: [_BOLT11_MELT_QUOTE, _PROOF_STATE],
+                            _COMMANDS: [
+                                JSONRPCSubscriptionKinds.BOLT11_MELT_QUOTE.value,
+                                JSONRPCSubscriptionKinds.PROOF_STATE.value,
+                            ],
                         }
                     )
                     if unit_dict[unit].supports_incoming_payment_stream:
@@ -183,7 +180,8 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
                             websocket_features[_SUPPORTED][-1][_COMMANDS]
                         )
                         websocket_features[_SUPPORTED][-1][_COMMANDS] = (
-                            supported_features + [_BOLT11_MINT_QUOTE]
+                            supported_features
+                            + [JSONRPCSubscriptionKinds.BOLT11_MINT_QUOTE.value]
                         )
 
         if websocket_features:
@@ -235,15 +233,7 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
                     },
                     {
                         "method": "POST",
-                        "path": "/v1/mint/bolt12",
-                    },
-                    {
-                        "method": "POST",
                         "path": "/v1/melt/bolt11",
-                    },
-                    {
-                        "method": "POST",
-                        "path": "/v1/melt/bolt12",
                     },
                     {
                         "method": "POST",

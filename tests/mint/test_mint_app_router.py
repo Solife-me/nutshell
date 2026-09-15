@@ -58,6 +58,7 @@ def _dummy_ledger():
         icon_url="https://mint.test/icon.png",
         tos_url="https://mint.test/tos",
         motd="Hello",
+        max_array_length=1000,
     )
 
     async def mint_quote(payload):
@@ -161,6 +162,25 @@ def test_create_app_sets_metadata():
     app = app_module.create_app()
     assert app.title == "Nutshell Mint"
     assert app.version == settings.version
+
+
+def test_app_does_not_mount_v0_mint_routes():
+    paths = {route.path for route in app_module.app.routes}
+    assert "/v1/info" in paths
+    assert not paths.intersection(
+        {
+            "/info",
+            "/keys",
+            "/keys/{idBase64Urlsafe}",
+            "/keysets",
+            "/mint",
+            "/melt",
+            "/checkfees",
+            "/split",
+            "/check",
+            "/restore",
+        }
+    )
 
 
 def test_catch_exceptions_maps_cashu_errors_to_json():

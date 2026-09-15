@@ -10,13 +10,8 @@ class PostMeltRequestOptionMpp(BaseModel):
     amount: int = Field(gt=0)  # input amount
 
 
-class PostMeltRequestOptionAmountless(BaseModel):
-    amount_msat: int = Field(gt=0)
-
-
 class PostMeltRequestOptions(BaseModel):
-    mpp: Optional[PostMeltRequestOptionMpp] = None
-    amountless: Optional[PostMeltRequestOptionAmountless] = None
+    mpp: Optional[PostMeltRequestOptionMpp]
 
 
 class PostMeltQuoteRequest(BaseModel):
@@ -41,31 +36,15 @@ class PostMeltQuoteRequest(BaseModel):
         else:
             raise Exception("quote request is not mpp.")
 
-    @property
-    def is_amountless(self) -> bool:
-        return bool(self.options and self.options.amountless)
-
-    @property
-    def amountless_amount_msat(self) -> int:
-        if self.is_amountless and self.options and self.options.amountless:
-            return self.options.amountless.amount_msat
-        raise Exception("quote request is not amountless.")
-
 
 class PostMeltQuoteResponse(BaseModel):
     quote: str  # quote id
     amount: int  # input amount
-    unit: Optional[
-        str
-    ]  # input unit (optional for BACKWARDS COMPAT mint response < 0.17.0)
-    method: Optional[str] = (
-        None  # payment method (optional for BACKWARDS COMPAT mint response < 0.20.1)
-    )
-    request: Optional[
-        str
-    ]  # output payment request (optional for BACKWARDS COMPAT mint response < 0.17.0)
+    unit: str  # input unit
+    method: str  # payment method
+    request: str  # output payment request
     fee_reserve: int  # input fee reserve
-    state: Optional[str]  # state of the quote
+    state: str  # state of the quote
     expiry: Optional[int]  # expiry of the quote
     payment_preimage: Optional[str] = None  # payment preimage
     change: Union[List[BlindedSignature], None] = None  # NUT-08 change

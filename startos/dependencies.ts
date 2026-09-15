@@ -24,17 +24,6 @@ export const dependenciesForBackend = (backend: string | null | undefined) => {
     ]
   }
 
-  if (backend === 'lnbits') {
-    return [
-      {
-        id: 'lnbits',
-        kind: 'running' as const,
-        versionRange: '>=1.5.4:0',
-        healthChecks: [],
-      },
-    ]
-  }
-
   if (backend === 'phoenixd') {
     return [
       {
@@ -50,9 +39,7 @@ export const dependenciesForBackend = (backend: string | null | undefined) => {
 }
 
 export const setDependencies = sdk.setupDependencies(async ({ effects }) => {
-  const backend = await storeJson
-    .read((s) => s.lightningBackend)
-    .const(effects)
+  const backend = await storeJson.read((s) => s.lightningBackend).const(effects)
 
   return Object.fromEntries(
     dependenciesForBackend(backend).map(({ id, ...dependency }) => [

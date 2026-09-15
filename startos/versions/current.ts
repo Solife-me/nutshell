@@ -4,15 +4,19 @@ import { dependenciesForBackend } from '../dependencies'
 import { storeJson } from '../fileModels/store.json'
 
 export const current = VersionInfo.of({
-  version: '0.20.3:0',
+  version: '0.20.3:1',
   releaseNotes: {
-    en_US: `Updated Nutshell to 0.20.3 and rebuilt the package with StartOS SDK 2.0.9.
+    en_US: `Updated to upstream Nutshell main at 3e19084a (2026-09-08), based on 0.20.3.
 
-- Adds mint quote accounting and batch mint support
-- Adds LND 0.21 compatibility
-- Retains the StartOS package's Phoenixd and BOLT12 support
+- Includes upstream payment, validation, error-code, and dependency updates
+- Uses upstream BOLT11 protocol behavior; removes the custom BOLT12 implementation
+- Removes LNbits support to follow upstream; previously configured LNbits services must select a supported backend before starting
+- Retains StartOS integration for LND, Core Lightning, phoenixd, and FakeWallet
+- Core Lightning now uses the upstream xpay RPC
 
-[Full upstream changes](https://github.com/cashubtc/nutshell/compare/0.20.1...0.20.3)`,
+Complete outstanding BOLT12 mint and melt operations before upgrading. This release cannot service earlier BOLT12 offers or quotes.
+
+[Full upstream changes](https://github.com/cashubtc/nutshell/compare/0.20.3...3e19084a)`,
   },
   migrations: {
     up: async ({ effects }) => {

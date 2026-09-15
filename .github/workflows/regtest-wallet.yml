@@ -55,9 +55,6 @@ jobs:
           MINT_TEST_DATABASE: ${{ inputs.mint-database }}
           TOR: false
           MINT_BACKEND_BOLT11_SAT: ${{ inputs.backend-wallet-class }}
-          # LNbits wallet
-          MINT_LNBITS_ENDPOINT: http://localhost:5001
-          MINT_LNBITS_KEY: d08a3313322a4514af75d488bcc27eee
           # LndRestWallet
           MINT_LND_REST_ENDPOINT: https://localhost:8081/
           MINT_LND_REST_CERT: ./regtest/data/lnd-3/tls.cert
@@ -66,10 +63,6 @@ jobs:
           MINT_LND_RPC_ENDPOINT: localhost:10009
           MINT_LND_RPC_CERT: ./regtest/data/lnd-3/tls.cert
           MINT_LND_RPC_MACAROON: ./regtest/data/lnd-3/data/chain/bitcoin/regtest/admin.macaroon
-          # CoreLightningRestWallet
-          MINT_CORELIGHTNING_REST_URL: https://localhost:3001
-          MINT_CORELIGHTNING_REST_MACAROON: ./regtest/data/clightning-2-rest/access.macaroon
-          MINT_CORELIGHTNING_REST_CERT: ./regtest/data/clightning-2-rest/certificate.pem
           # CLNRestWallet
           MINT_CLNREST_URL: https://localhost:3010
           MINT_CLNREST_RUNE: ./regtest/data/clightning-2/rune

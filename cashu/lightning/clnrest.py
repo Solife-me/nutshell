@@ -17,11 +17,8 @@ from ..core.helpers import fee_reserve
 from ..core.models import PostMeltQuoteRequest
 from ..core.settings import settings
 from .base import (
-    Bolt12InvoiceQuoteResponse,
     InvoiceResponse,
     LightningBackend,
-    OfferResponse,
-    OfferStatusResponse,
     PaymentQuoteResponse,
     PaymentResponse,
     PaymentResult,
@@ -30,11 +27,15 @@ from .base import (
     Unsupported,
 )
 
-# https://docs.corelightning.org/reference/lightning-pay
+CLN_PAYMENT_STATUS_COMPLETE = "complete"
+CLN_PAYMENT_STATUS_PENDING = "pending"
+CLN_PAYMENT_STATUS_FAILED = "failed"
+
+# https://docs.corelightning.org/reference/listpays
 PAYMENT_RESULT_MAP = {
-    "complete": PaymentResult.SETTLED,
-    "pending": PaymentResult.PENDING,
-    "failed": PaymentResult.FAILED,
+    CLN_PAYMENT_STATUS_COMPLETE: PaymentResult.SETTLED,
+    CLN_PAYMENT_STATUS_PENDING: PaymentResult.PENDING,
+    CLN_PAYMENT_STATUS_FAILED: PaymentResult.FAILED,
 }
 
 # https://docs.corelightning.org/reference/lightning-listinvoices
@@ -43,14 +44,6 @@ INVOICE_RESULT_MAP = {
     "unpaid": PaymentResult.PENDING,
     "expired": PaymentResult.FAILED,
 }
-
-
-def _msat_to_int(value) -> int:
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        return int(value.removesuffix("msat"))
-    return int(value)
 
 
 class CLNRestWallet(LightningBackend):
@@ -90,7 +83,10 @@ class CLNRestWallet(LightningBackend):
 
         self.cert = settings.mint_clnrest_cert or False
         self.client = httpx.AsyncClient(
-            base_url=self.url, verify=self.cert, headers=self.auth, timeout=None,
+            base_url=self.url,
+            verify=self.cert,
+            headers=self.auth,
+            timeout=None,
         )
         self.last_pay_index = 0
 
@@ -189,40 +185,30 @@ class CLNRestWallet(LightningBackend):
     async def pay_invoice(
         self, quote: MeltQuote, fee_limit_msat: int
     ) -> PaymentResponse:
+        try:
+            invoice = decode(quote.request)
+        except Bolt11Exception as exc:
+            return PaymentResponse(
+                result=PaymentResult.FAILED,
+                error_message=str(exc),
+            )
+
+        if not invoice.amount_msat or invoice.amount_msat <= 0:
+            error_message = "0 amount invoices are not allowed"
+            return PaymentResponse(
+                result=PaymentResult.FAILED,
+                error_message=error_message,
+            )
+
         quote_amount_msat = Amount(Unit[quote.unit], quote.amount).to(Unit.msat).amount
-        invoice_request = quote.request
-        if quote.method == "bolt12":
-            invoice_request = quote.checking_id
-        else:
-            try:
-                invoice = decode(quote.request)
-            except Bolt11Exception as exc:
-                return PaymentResponse(
-                    result=PaymentResult.FAILED,
-                    error_message=str(exc),
-                )
-
-            if not invoice.amount_msat or invoice.amount_msat <= 0:
-                error_message = "0 amount invoices are not allowed"
-                return PaymentResponse(
-                    result=PaymentResult.FAILED,
-                    error_message=error_message,
-                )
-
-        fee_limit_percent = fee_limit_msat / quote_amount_msat * 100
         post_data = {
-            "bolt11": invoice_request,
-            "maxfeepercent": f"{fee_limit_percent:.11}",
-            "exemptfee": 0,  # so fee_limit_percent is applied even on payments
-            # with fee < 5000 millisatoshi (which is default value of exemptfee)
+            "invstring": quote.request,
+            "maxfee": fee_limit_msat,
         }
 
         # Handle Multi-Mint payout where we must only pay part of the invoice amount
-        invoice_amount_msat = quote_amount_msat
-        if quote.method != "bolt12":
-            invoice_amount_msat = invoice.amount_msat
-        logger.trace(f"{quote_amount_msat = }, {invoice_amount_msat = }")
-        if quote.method != "bolt12" and quote_amount_msat != invoice_amount_msat:
+        logger.trace(f"{quote_amount_msat = }, {invoice.amount_msat = }")
+        if quote_amount_msat != invoice.amount_msat:
             logger.trace("Detected Multi-Nut payment")
             if self.supports_mpp:
                 post_data["partial_msat"] = quote_amount_msat
@@ -232,7 +218,7 @@ class CLNRestWallet(LightningBackend):
                 return PaymentResponse(
                     result=PaymentResult.FAILED, error_message=error_message
                 )
-        r = await self.client.post("/v1/pay", data=post_data, timeout=None)
+        r = await self.client.post("/v1/xpay", data=post_data, timeout=None)
 
         if r.is_error or "message" in r.json():
             try:
@@ -246,14 +232,12 @@ class CLNRestWallet(LightningBackend):
 
         data = r.json()
 
-        checking_id = data["payment_hash"]
+        checking_id = invoice.payment_hash
         preimage = data["payment_preimage"]
-        fee_msat = _msat_to_int(data["amount_sent_msat"]) - _msat_to_int(
-            data["amount_msat"]
-        )
+        fee_msat = int(data["amount_sent_msat"]) - int(data["amount_msat"])
 
         return PaymentResponse(
-            result=PAYMENT_RESULT_MAP[data["status"]],
+            result=PaymentResult.SETTLED,
             checking_id=checking_id,
             fee=Amount(unit=Unit.msat, amount=fee_msat) if fee_msat else None,
             preimage=preimage,
@@ -278,10 +262,10 @@ class CLNRestWallet(LightningBackend):
             return PaymentStatus(result=PaymentResult.UNKNOWN, error_message=str(e))
 
     async def get_payment_status(self, checking_id: str) -> PaymentStatus:
-        request_data = {"payment_hash": checking_id}
-        if checking_id.startswith("lni"):
-            request_data = {"bolt11": checking_id}
-        r = await self.client.post("/v1/listpays", data=request_data)
+        r = await self.client.post(
+            "/v1/listpays",
+            data={"payment_hash": checking_id},
+        )
         r.raise_for_status()
         data = r.json()
 
@@ -296,13 +280,29 @@ class CLNRestWallet(LightningBackend):
             message = data.get("message") or data
             raise Exception(f"error in clnrest response: {message}")
 
-        pay = data["pays"][0]
+        pays = data["pays"]
+        pay = next(
+            (pay for pay in pays if pay["status"] == CLN_PAYMENT_STATUS_PENDING),
+            None,
+        )
+        if pay is None:
+            pay = next(
+                (pay for pay in pays if pay["status"] == CLN_PAYMENT_STATUS_COMPLETE),
+                None,
+            )
+        if pay is None and all(
+            pay["status"] == CLN_PAYMENT_STATUS_FAILED for pay in pays
+        ):
+            pay = pays[-1]
+        if pay is None:
+            return PaymentStatus(
+                result=PaymentResult.UNKNOWN,
+                error_message="unknown payment status",
+            )
 
         fee_msat, preimage = None, None
         if PAYMENT_RESULT_MAP[pay["status"]] == PaymentResult.SETTLED:
-            fee_msat = _msat_to_int(pay["amount_sent_msat"]) - _msat_to_int(
-                pay["amount_msat"]
-            )
+            fee_msat = int(pay["amount_sent_msat"]) - int(pay["amount_msat"])
             preimage = pay["preimage"]
 
         return PaymentStatus(
@@ -327,10 +327,10 @@ class CLNRestWallet(LightningBackend):
             else 0
         )
         self.last_pay_index = last_pay_index
-        
+
         retry_delay = 0
         max_retry_delay = settings.mint_retry_exponential_backoff_max_delay
-        
+
         while True:
             try:
                 url = "/v1/waitanyinvoice"
@@ -372,9 +372,12 @@ class CLNRestWallet(LightningBackend):
                     " seconds"
                 )
                 await asyncio.sleep(retry_delay)
-                
+
                 # Exponential backoff
-                retry_delay = max(settings.mint_retry_exponential_backoff_base_delay, min(retry_delay * 2, max_retry_delay))
+                retry_delay = max(
+                    settings.mint_retry_exponential_backoff_base_delay,
+                    min(retry_delay * 2, max_retry_delay),
+                )
 
     async def get_payment_quote(
         self, melt_quote: PostMeltQuoteRequest
@@ -392,92 +395,4 @@ class CLNRestWallet(LightningBackend):
             checking_id=invoice_obj.payment_hash,
             fee=fees.to(self.unit, round="up"),
             amount=amount.to(self.unit, round="up"),
-        )
-
-    async def create_offer(
-        self,
-        amount: Optional[Amount],
-        description: Optional[str],
-        label: str,
-    ) -> OfferResponse:
-        post_data: Dict = {
-            "amount": "any" if amount is None else f"{amount.to(Unit.msat).amount}msat",
-            "label": label,
-        }
-        post_data["description"] = (
-            description or settings.mint_info_description or settings.mint_info_name
-        )
-
-        r = await self.client.post("/v1/offer", data=post_data)
-        data = r.json()
-        if r.is_error or "message" in data:
-            return OfferResponse(
-                ok=False,
-                error_message=str(data.get("message") or data),
-            )
-
-        return OfferResponse(
-            ok=True,
-            checking_id=data["offer_id"],
-            payment_request=data["bolt12"],
-        )
-
-    async def get_offer_status(self, offer_id: str) -> OfferStatusResponse:
-        r = await self.client.post("/v1/listinvoices", data={"offer_id": offer_id})
-        data = r.json()
-        if r.is_error or "message" in data:
-            return OfferStatusResponse(
-                amount_paid=Amount(Unit.msat, 0),
-                error_message=str(data.get("message") or data),
-            )
-
-        amount_paid_msat = sum(
-            _msat_to_int(invoice.get("amount_received_msat", 0))
-            for invoice in data.get("invoices", [])
-            if invoice.get("status") == "paid"
-        )
-        return OfferStatusResponse(amount_paid=Amount(Unit.msat, amount_paid_msat))
-
-    async def _decode_bolt12_invoice(self, invoice: str) -> Dict:
-        r = await self.client.post("/v1/decode", data={"string": invoice})
-        data = r.json()
-        if r.is_error or "message" in data:
-            message = data.get("message") or data
-            raise Exception(f"error decoding bolt12 invoice: {message}")
-        if data.get("type") != "bolt12 invoice" or not data.get("valid"):
-            raise Exception("invalid bolt12 invoice")
-        return data
-
-    async def get_bolt12_invoice_quote(
-        self,
-        melt_quote: PostMeltQuoteRequest,
-    ) -> Bolt12InvoiceQuoteResponse:
-        post_data: Dict = {"offer": melt_quote.request}
-        if melt_quote.is_amountless:
-            post_data["amount_msat"] = melt_quote.amountless_amount_msat
-
-        r = await self.client.post("/v1/fetchinvoice", data=post_data, timeout=None)
-        data = r.json()
-        if r.is_error or "message" in data:
-            message = data.get("message") or data
-            raise Exception(f"error fetching bolt12 invoice: {message}")
-
-        invoice = data["invoice"]
-        decoded_invoice = await self._decode_bolt12_invoice(invoice)
-        amount_msat = _msat_to_int(decoded_invoice["invoice_amount_msat"])
-        fees_msat = fee_reserve(amount_msat)
-        expiry = None
-        if decoded_invoice.get("invoice_relative_expiry") is not None:
-            expiry = int(decoded_invoice["invoice_created_at"]) + int(
-                decoded_invoice["invoice_relative_expiry"]
-            )
-
-        return Bolt12InvoiceQuoteResponse(
-            invoice=invoice,
-            payment_hash=decoded_invoice["invoice_payment_hash"],
-            amount=Amount(unit=Unit.msat, amount=amount_msat).to(
-                self.unit, round="up"
-            ),
-            fee=Amount(unit=Unit.msat, amount=fees_msat).to(self.unit, round="up"),
-            expiry=expiry,
         )

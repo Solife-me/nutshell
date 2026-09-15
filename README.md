@@ -215,7 +215,7 @@ Build the package with:
 make s9pk
 ```
 
-After installing on StartOS, use the service actions to review mint settings and select a same-server Lightning backend. The package supports LNbits, LND, phoenixd, Core Lightning, and FakeWallet for testing.
+After installing on StartOS, use the service actions to review mint settings and select a same-server Lightning backend. The package supports LND, phoenixd, Core Lightning, and FakeWallet for testing. It uses upstream Nutshell's BOLT11 implementation; custom BOLT12 support and the retired LNbits backend are no longer included. See [upgrade instructions](instructions.md#upgrading-from-earlier-packages) before updating an earlier package.
 
 ## From this repository
 

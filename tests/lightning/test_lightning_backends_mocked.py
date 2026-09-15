@@ -10,15 +10,16 @@ from cashu.core.base import Amount, MeltQuote, MeltQuoteState, Unit
 from cashu.core.helpers import fee_reserve
 from cashu.core.models import (
     PostMeltQuoteRequest,
-    PostMeltRequestOptionAmountless,
     PostMeltRequestOptionMpp,
     PostMeltRequestOptions,
 )
 from cashu.lightning.base import PaymentResult, Unsupported
-from cashu.lightning.blink import BlinkWallet
-from cashu.lightning.clnrest import CLNRestWallet
-from cashu.lightning.corelightningrest import CoreLightningRestWallet
-from cashu.lightning.lnbits import LNbitsWallet  # type: ignore[attr-defined]
+from cashu.lightning.clnrest import (
+    CLN_PAYMENT_STATUS_COMPLETE,
+    CLN_PAYMENT_STATUS_FAILED,
+    CLN_PAYMENT_STATUS_PENDING,
+    CLNRestWallet,
+)
 from cashu.lightning.lndrest import LndRestWallet
 from cashu.lightning.phoenixd import PhoenixdWallet
 from cashu.lightning.strike import StrikeWallet
@@ -44,19 +45,6 @@ def _quote(request: str, amount: int = 1, unit: str = "sat") -> MeltQuote:
     )
 
 
-def _bolt12_quote(request: str, invoice: str, amount: int = 1) -> MeltQuote:
-    return MeltQuote(
-        quote="q1",
-        method="bolt12",
-        request=request,
-        checking_id=invoice,
-        unit="sat",
-        amount=amount,
-        fee_reserve=1,
-        state=MeltQuoteState.unpaid,
-    )
-
-
 class _StreamResponse:
     def __init__(self, lines: list[str]):
         self.lines = lines
@@ -70,109 +58,6 @@ class _StreamResponse:
     async def aiter_lines(self):
         for line in self.lines:
             yield line
-
-
-@pytest.mark.asyncio
-async def test_lnbits_status_returns_error_on_detail():
-    wallet = object.__new__(LNbitsWallet)
-    wallet.unit = Unit.sat
-    wallet.endpoint = "https://lnbits.test"
-
-    class Client:
-        async def get(self, url, timeout=None):
-            return _response(200, {"detail": "bad key"})
-
-    cast(Any, wallet).client = Client()
-
-    status = await wallet.status()
-    assert status.error_message == "LNbits error: bad key"
-    assert status.balance.amount == 0
-
-
-@pytest.mark.asyncio
-async def test_lnbits_create_invoice_http_error_returns_failure():
-    wallet = object.__new__(LNbitsWallet)
-    wallet.unit = Unit.sat
-    wallet.endpoint = "https://lnbits.test"
-
-    class Client:
-        async def post(self, url, json=None):
-            return _response(500, {"detail": "bad"})
-
-    cast(Any, wallet).client = Client()
-
-    invoice = await wallet.create_invoice(Amount(Unit.sat, 2))
-    assert not invoice.ok
-    assert "HTTP status" in str(invoice.error_message)
-
-
-@pytest.mark.asyncio
-async def test_lnbits_pay_invoice_without_hash_is_unknown():
-    wallet = object.__new__(LNbitsWallet)
-    wallet.unit = Unit.sat
-    wallet.endpoint = "https://lnbits.test"
-
-    class Client:
-        async def post(self, url, json=None, timeout=None):
-            return _response(200, {"paid": True})
-
-    cast(Any, wallet).client = Client()
-    result = await wallet.pay_invoice(_quote("lnbc1fake"), 1000)
-    assert result.result == PaymentResult.UNKNOWN
-    assert result.error_message == "No payment_hash received"
-
-
-@pytest.mark.asyncio
-async def test_lnbits_get_payment_status_rejects_invalid_response():
-    wallet = object.__new__(LNbitsWallet)
-    wallet.unit = Unit.sat
-    wallet.endpoint = "https://lnbits.test"
-
-    class Client:
-        async def get(self, url):
-            return _response(200, {"foo": "bar"})
-
-    cast(Any, wallet).client = Client()
-    status = await wallet.get_payment_status("hash")
-    assert status.result == PaymentResult.UNKNOWN
-    assert status.error_message == "invalid response"
-
-
-@pytest.mark.asyncio
-async def test_lnbits_get_invoice_status_maps_pending_and_failed():
-    wallet = object.__new__(LNbitsWallet)
-    wallet.unit = Unit.sat
-    wallet.endpoint = "https://lnbits.test"
-
-    class Client:
-        calls = 0
-
-        async def get(self, url):
-            Client.calls += 1
-            if Client.calls == 1:
-                return _response(
-                    200,
-                    {
-                        "paid": False,
-                        "details": {"status": "pending", "fee": -2},
-                        "preimage": None,
-                    },
-                )
-            return _response(
-                200,
-                {
-                    "paid": False,
-                    "details": {"status": "failed", "fee": -3},
-                    "preimage": None,
-                },
-            )
-
-    cast(Any, wallet).client = Client()
-    pending = await wallet.get_invoice_status("hash")
-    failed = await wallet.get_invoice_status("hash")
-
-    assert pending.result == PaymentResult.PENDING
-    assert failed.result == PaymentResult.FAILED
 
 
 @pytest.mark.asyncio
@@ -380,6 +265,83 @@ async def test_clnrest_pay_invoice_mpp_not_supported(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_clnrest_pay_invoice_uses_xpay(monkeypatch):
+    wallet = object.__new__(CLNRestWallet)
+    wallet.unit = Unit.sat
+    wallet.supports_mpp = True
+    request_data = None
+
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            nonlocal request_data
+            assert url == "/v1/xpay"
+            assert timeout is None
+            request_data = data
+            return _response(
+                200,
+                {
+                    "payment_preimage": "preimage",
+                    "failed_parts": 0,
+                    "successful_parts": 1,
+                    "amount_msat": 1000,
+                    "amount_sent_msat": 1100,
+                },
+            )
+
+    cast(Any, wallet).client = Client()
+    monkeypatch.setattr(
+        "cashu.lightning.clnrest.decode",
+        lambda request: SimpleNamespace(amount_msat=1000, payment_hash="hash"),
+    )
+
+    result = await wallet.pay_invoice(_quote("lnbc1fake", amount=1), fee_limit_msat=100)
+
+    assert request_data == {"invstring": "lnbc1fake", "maxfee": 100}
+    assert result.result == PaymentResult.SETTLED
+    assert result.checking_id == "hash"
+    assert result.fee == Amount(Unit.msat, 100)
+    assert result.preimage == "preimage"
+
+
+@pytest.mark.asyncio
+async def test_clnrest_xpay_uses_partial_msat_for_mpp(monkeypatch):
+    wallet = object.__new__(CLNRestWallet)
+    wallet.unit = Unit.sat
+    wallet.supports_mpp = True
+    request_data = None
+
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            nonlocal request_data
+            request_data = data
+            return _response(
+                200,
+                {
+                    "payment_preimage": "preimage",
+                    "failed_parts": 0,
+                    "successful_parts": 1,
+                    "amount_msat": 1000,
+                    "amount_sent_msat": 1000,
+                },
+            )
+
+    cast(Any, wallet).client = Client()
+    monkeypatch.setattr(
+        "cashu.lightning.clnrest.decode",
+        lambda request: SimpleNamespace(amount_msat=2000, payment_hash="hash"),
+    )
+
+    result = await wallet.pay_invoice(_quote("lnbc1fake", amount=1), fee_limit_msat=100)
+
+    assert request_data == {
+        "invstring": "lnbc1fake",
+        "maxfee": 100,
+        "partial_msat": 1000,
+    }
+    assert result.result == PaymentResult.SETTLED
+
+
+@pytest.mark.asyncio
 async def test_clnrest_get_payment_status_not_found_is_unknown():
     wallet = object.__new__(CLNRestWallet)
     wallet.unit = Unit.sat
@@ -431,185 +393,85 @@ async def test_clnrest_get_payment_quote_uses_mpp_amount(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clnrest_create_offer_uses_bolt12_rpc():
-    wallet = object.__new__(CLNRestWallet)
-    wallet.unit = Unit.sat
-    calls = []
-
-    class Client:
-        async def post(self, url, data=None, timeout=None):
-            calls.append((url, data))
-            return _response(
-                200,
-                {
-                    "offer_id": "offer-id",
-                    "bolt12": "lno1offer",
-                },
-            )
-
-    cast(Any, wallet).client = Client()
-    offer = await wallet.create_offer(
-        Amount(Unit.sat, 21), description="mint", label="quote-id"
-    )
-
-    assert offer.ok
-    assert offer.checking_id == "offer-id"
-    assert offer.payment_request == "lno1offer"
-    assert calls == [
+@pytest.mark.parametrize(
+    "pays, expected_result, expected_fee, expected_preimage",
+    [
         (
-            "/v1/offer",
-            {
-                "amount": "21000msat",
-                "description": "mint",
-                "label": "quote-id",
-            },
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_clnrest_get_offer_status_sums_paid_invoices():
-    wallet = object.__new__(CLNRestWallet)
-    wallet.unit = Unit.sat
-
-    class Client:
-        async def post(self, url, data=None, timeout=None):
-            assert url == "/v1/listinvoices"
-            assert data == {"offer_id": "offer-id"}
-            return _response(
-                200,
-                {
-                    "invoices": [
-                        {"status": "paid", "amount_received_msat": 1000},
-                        {"status": "unpaid", "amount_received_msat": 2000},
-                        {"status": "paid", "amount_received_msat": "3000msat"},
-                    ]
-                },
-            )
-
-    cast(Any, wallet).client = Client()
-    status = await wallet.get_offer_status("offer-id")
-    assert status.error_message is None
-    assert status.amount_paid == Amount(Unit.msat, 4000)
-
-
-@pytest.mark.asyncio
-async def test_clnrest_get_bolt12_invoice_quote_fetches_and_decodes():
-    wallet = object.__new__(CLNRestWallet)
-    wallet.unit = Unit.sat
-    calls = []
-
-    class Client:
-        async def post(self, url, data=None, timeout=None):
-            calls.append((url, data))
-            if url == "/v1/fetchinvoice":
-                return _response(200, {"invoice": "lni1invoice"})
-            if url == "/v1/decode":
-                return _response(
-                    200,
-                    {
-                        "type": "bolt12 invoice",
-                        "valid": True,
-                        "invoice_payment_hash": "ab" * 32,
-                        "invoice_amount_msat": "21000msat",
-                        "invoice_created_at": 100,
-                        "invoice_relative_expiry": 60,
-                    },
-                )
-            raise AssertionError(url)
-
-    cast(Any, wallet).client = Client()
-    request = PostMeltQuoteRequest(
-        unit="sat",
-        request="lno1offer",
-        options=PostMeltRequestOptions(
-            amountless=PostMeltRequestOptionAmountless(amount_msat=21000)
+            [
+                {"status": CLN_PAYMENT_STATUS_FAILED},
+                {"status": CLN_PAYMENT_STATUS_PENDING},
+            ],
+            PaymentResult.PENDING,
+            None,
+            None,
         ),
-    )
-    quote = await wallet.get_bolt12_invoice_quote(request)
-
-    assert quote.invoice == "lni1invoice"
-    assert quote.payment_hash == "ab" * 32
-    assert quote.amount == Amount(Unit.sat, 21)
-    assert quote.fee == Amount(Unit.msat, fee_reserve(21000)).to(
-        Unit.sat, round="up"
-    )
-    assert quote.expiry == 160
-    assert calls == [
-        ("/v1/fetchinvoice", {"offer": "lno1offer", "amount_msat": 21000}),
-        ("/v1/decode", {"string": "lni1invoice"}),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_clnrest_pay_invoice_uses_stored_bolt12_invoice():
-    wallet = object.__new__(CLNRestWallet)
-    wallet.unit = Unit.sat
-    calls = []
-
-    class Client:
-        async def post(self, url, data=None, timeout=None):
-            calls.append((url, data))
-            return _response(
-                200,
+        (
+            [
+                {"status": CLN_PAYMENT_STATUS_FAILED},
                 {
-                    "payment_hash": "ab" * 32,
-                    "payment_preimage": "cd" * 32,
+                    "status": CLN_PAYMENT_STATUS_COMPLETE,
+                    "amount_sent_msat": 1100,
                     "amount_msat": 1000,
-                    "amount_sent_msat": 1001,
-                    "status": "complete",
+                    "preimage": "preimage",
                 },
-            )
-
-    cast(Any, wallet).client = Client()
-    result = await wallet.pay_invoice(
-        _bolt12_quote("lno1offer", "lni1invoice"), fee_limit_msat=1000
-    )
-
-    assert result.result == PaymentResult.SETTLED
-    assert result.checking_id == "ab" * 32
-    assert result.preimage == "cd" * 32
-    assert calls[0][0] == "/v1/pay"
-    assert calls[0][1]["bolt11"] == "lni1invoice"
-
-
-@pytest.mark.asyncio
-async def test_corelightningrest_create_invoice_description_hash_unsupported():
-    wallet = object.__new__(CoreLightningRestWallet)
-    wallet.unit = Unit.sat
-    with pytest.raises(Unsupported):
-        await wallet.create_invoice(Amount(Unit.sat, 1), description_hash=b"x")
-
-
-@pytest.mark.asyncio
-async def test_corelightningrest_get_payment_status_not_found_is_unknown():
-    wallet = object.__new__(CoreLightningRestWallet)
+            ],
+            PaymentResult.SETTLED,
+            100,
+            "preimage",
+        ),
+        (
+            [
+                {
+                    "status": CLN_PAYMENT_STATUS_COMPLETE,
+                    "amount_sent_msat": 1100,
+                    "amount_msat": 1000,
+                    "preimage": "preimage",
+                },
+                {"status": CLN_PAYMENT_STATUS_PENDING},
+            ],
+            PaymentResult.PENDING,
+            None,
+            None,
+        ),
+        (
+            [
+                {"status": CLN_PAYMENT_STATUS_FAILED},
+                {"status": CLN_PAYMENT_STATUS_FAILED},
+            ],
+            PaymentResult.FAILED,
+            None,
+            None,
+        ),
+        (
+            [
+                {"status": CLN_PAYMENT_STATUS_FAILED},
+                {"status": "unexpected"},
+            ],
+            PaymentResult.UNKNOWN,
+            None,
+            None,
+        ),
+    ],
+)
+async def test_cln_get_payment_status_aggregates_all_pay_attempts(
+    pays, expected_result, expected_fee, expected_preimage
+):
+    wallet = object.__new__(CLNRestWallet)
     wallet.unit = Unit.sat
 
     class Client:
         async def get(self, *args, **kwargs):
-            return _response(200, {"pays": []})
+            return _response(200, {"pays": pays})
+
+        async def post(self, *args, **kwargs):
+            return _response(200, {"pays": pays})
 
     cast(Any, wallet).client = Client()
     status = await wallet.get_payment_status("hash")
-    assert status.result == PaymentResult.UNKNOWN
-    assert status.error_message == "payment not found"
 
-
-@pytest.mark.asyncio
-async def test_corelightningrest_status_with_error_payload_returns_failure():
-    wallet = object.__new__(CoreLightningRestWallet)
-    wallet.unit = Unit.sat
-    wallet.url = "https://coreln.test"
-
-    class Client:
-        async def get(self, *args, **kwargs):
-            return _response(200, {"error": "denied"})
-
-    cast(Any, wallet).client = Client()
-    status = await wallet.status()
-    assert "Failed to connect" in str(status.error_message)
-    assert status.balance.amount == 0
+    assert status.result == expected_result
+    assert (status.fee.amount if status.fee else None) == expected_fee
+    assert status.preimage == expected_preimage
 
 
 @pytest.mark.asyncio
@@ -668,6 +530,51 @@ async def test_lndrest_pay_invoice_settled_reads_stream_result(monkeypatch):
     assert result.checking_id == "11" * 32
     assert result.fee == Amount(Unit.msat, 7)
     assert result.preimage == "ab" * 32
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled, expected", [(True, True), (False, False)])
+async def test_lndrest_pay_invoice_sends_allow_self_payment(
+    monkeypatch, enabled, expected
+):
+    wallet = object.__new__(LndRestWallet)
+    wallet.unit = Unit.sat
+    wallet.supports_mpp = False
+
+    captured: dict[str, Any] = {}
+
+    lines = [
+        json.dumps(
+            {
+                "result": {
+                    "status": "SUCCEEDED",
+                    "payment_hash": "11" * 32,
+                    "fee_msat": "7",
+                    "payment_preimage": "ab" * 32,
+                }
+            }
+        )
+    ]
+
+    class Client:
+        def stream(self, method, url, json=None, timeout=None):
+            captured["json"] = json
+            return _StreamResponse(lines)
+
+    cast(Any, wallet).client = Client()
+    monkeypatch.setattr(
+        "cashu.lightning.lndrest.bolt11.decode",
+        lambda request: SimpleNamespace(amount_msat=1000),
+    )
+    monkeypatch.setattr(
+        "cashu.lightning.lndrest.settings.mint_lnd_allow_self_payment",
+        enabled,
+    )
+    result = await wallet.pay_invoice(
+        _quote("lnbc1fake", amount=1), fee_limit_msat=1000
+    )
+    assert result.result == PaymentResult.SETTLED
+    assert captured["json"]["allow_self_payment"] is expected
 
 
 @pytest.mark.asyncio
@@ -853,55 +760,6 @@ async def test_lndrest_get_payment_quote_uses_mpp_amount(monkeypatch):
     assert quote.fee == Amount(Unit.msat, fee_reserve(1500)).to(
         Unit.sat, round="up"
     )
-
-
-@pytest.mark.asyncio
-async def test_blink_get_payment_status_send_receive_pair_is_failed(monkeypatch):
-    wallet = object.__new__(BlinkWallet)
-    wallet.unit = Unit.sat
-    wallet.wallet_ids = {Unit.sat: "wbtc"}
-    wallet.endpoint = "https://blink.test"
-
-    class Client:
-        async def post(self, *args, **kwargs):
-            return _response(
-                200,
-                {
-                    "data": {
-                        "me": {
-                            "defaultAccount": {
-                                "walletById": {
-                                    "transactionsByPaymentHash": [
-                                        {"direction": "SEND", "status": "FAILURE"},
-                                        {"direction": "RECEIVE", "status": "FAILURE"},
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                },
-            )
-
-    cast(Any, wallet).client = Client()
-    invoice = "lnbc10u1pjap7phpp50s9lzr3477j0tvacpfy2ucrs4q0q6cvn232ex7nt2zqxxxj8gxrsdpv2phhwetjv4jzqcneypqyc6t8dp6xu6twva2xjuzzda6qcqzzsxqrrsssp575z0n39w2j7zgnpqtdlrgz9rycner4eptjm3lz363dzylnrm3h4s9qyyssqfz8jglcshnlcf0zkw4qu8fyr564lg59x5al724kms3h6gpuhx9xrfv27tgx3l3u3cyf63r52u0xmac6max8mdupghfzh84t4hfsvrfsqwnuszf"
-    status = await wallet.get_payment_status(invoice)
-    assert status.result == PaymentResult.FAILED
-    assert status.error_message == "Payment failed"
-
-
-@pytest.mark.asyncio
-async def test_blink_get_sats_per_usd_raises_on_missing_conversion():
-    wallet = object.__new__(BlinkWallet)
-    wallet.unit = Unit.usd
-    wallet.endpoint = "https://blink.test"
-
-    class Client:
-        async def post(self, *args, **kwargs):
-            return _response(200, {"data": {"currencyConversionEstimation": None}})
-
-    cast(Any, wallet).client = Client()
-    with pytest.raises(Exception, match="Currency conversion service unavailable"):
-        await wallet._get_sats_per_usd()
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,6 @@ const { InputSpec, Value } = sdk
 
 export const backendValues = {
   fakewallet: 'FakeWallet',
-  lnbits: 'LNbits on this StartOS server',
   lnd: 'LND on this StartOS server',
   phoenixd: 'phoenixd on this StartOS server',
   cln: 'Core Lightning on this StartOS server',
@@ -27,13 +26,6 @@ export const inputSpec = InputSpec.of({
     default: 'lnd',
     values: backendValues,
   }),
-  lnbitsKey: Value.text({
-    name: i18n('LNbits API Key'),
-    description: i18n('Required only when LNbits is selected'),
-    default: null,
-    required: false,
-    masked: true,
-  }),
 })
 
 export const configureLightningBackend = sdk.Action.withInput(
@@ -41,7 +33,7 @@ export const configureLightningBackend = sdk.Action.withInput(
 
   async () => ({
     name: i18n('Configure Lightning Backend'),
-    description: i18n('Select LNbits, LND, phoenixd, CLN, or FakeWallet'),
+    description: i18n('Select LND, phoenixd, CLN, or FakeWallet'),
     warning: null,
     allowedStatuses: 'any',
     group: null,
@@ -54,18 +46,12 @@ export const configureLightningBackend = sdk.Action.withInput(
     const store = await storeJson.read((s) => s).const(effects)
     return {
       backend: normalizeBackend(store?.lightningBackend),
-      lnbitsKey: store?.lnbitsKey ?? null,
     }
   },
 
   async ({ effects, input }) => {
-    if (input.backend === 'lnbits' && !input.lnbitsKey) {
-      throw new Error('LNbits requires an API key')
-    }
-
     await storeJson.merge(effects, {
       lightningBackend: input.backend,
-      lnbitsKey: input.lnbitsKey || undefined,
     })
 
     await effects.setDependencies({

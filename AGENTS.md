@@ -26,6 +26,10 @@
 
 ## Repo Conventions
 
+### Line endings
+
+- Use LF line endings for all text files. The repository's `.gitattributes` enforces this convention; do not commit CRLF or mixed line endings.
+
 ### Commit messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):

@@ -6,7 +6,7 @@ import pytest_asyncio
 from fastapi import WebSocket
 
 from cashu.core.base import MeltQuoteState, MintQuoteState
-from cashu.core.errors import ProofsArePendingError
+from cashu.core.errors import ProofsArePendingError, QuoteAlreadyIssuedError
 from cashu.core.json_rpc.base import (
     JSONRPCMethods,
     JSONRPCNotficationParams,
@@ -19,7 +19,6 @@ from cashu.wallet.wallet import Wallet
 from tests.conftest import SERVER_ENDPOINT
 from tests.helpers import (
     assert_err,
-    is_deprecated_api_only,
     is_github_actions,
     pay_if_regtest,
 )
@@ -210,6 +209,26 @@ async def test_melt_quote_state_transitions(wallet: Wallet, ledger: Ledger):
 
 
 @pytest.mark.asyncio
+async def test_mint_quote_set_pending_rejects_issued_quote(
+    wallet: Wallet, ledger: Ledger
+):
+    """An issued quote is neither pending nor paid, so the locked guard must not
+    fall through to QuoteNotPaidError."""
+    mint_quote = await wallet.request_mint(128)
+    await pay_if_regtest(mint_quote.request)
+    _ = await ledger.get_mint_quote(mint_quote.quote)
+
+    quote = await ledger.crud.get_mint_quote(quote_id=mint_quote.quote, db=ledger.db)
+    assert quote is not None
+    quote.state = MintQuoteState.issued
+    await ledger.crud.update_mint_quote(quote=quote, db=ledger.db)
+
+    with pytest.raises(QuoteAlreadyIssuedError) as exc_info:
+        await ledger.db_write._set_mint_quote_pending(quote.quote)
+    assert exc_info.value.code == 20002
+
+
+@pytest.mark.asyncio
 async def test_mint_quote_set_pending(wallet: Wallet, ledger: Ledger):
     mint_quote = await wallet.request_mint(128)
     mint_quote = await ledger.crud.get_mint_quote(
@@ -294,7 +313,8 @@ async def test_db_events_add_client(wallet: Wallet, ledger: Ledger):
     notification = JSONRPCNotification(
         method=JSONRPCMethods.SUBSCRIBE.value,
         params=JSONRPCNotficationParams(
-            subId="subId", payload=PostMeltQuoteResponse.from_melt_quote(quote_pending).model_dump()
+            subId="subId",
+            payload=PostMeltQuoteResponse.from_melt_quote(quote_pending).model_dump(),
         ).model_dump(),
     )
 
@@ -339,7 +359,6 @@ async def test_db_update_mint_quote_state(wallet: Wallet, ledger: Ledger):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(is_deprecated_api_only, reason=("Deprecated API"))
 async def test_db_update_melt_quote_state(wallet: Wallet, ledger: Ledger):
     melt_quote = await wallet.melt_quote(payment_request)
     await ledger.db_write._update_melt_quote_state(
@@ -497,9 +516,10 @@ async def test_get_melt_quotes_by_checking_id_different_checking_ids(ledger: Led
 @pytest.mark.asyncio
 async def test_mint_quote_paid_time_update(wallet: Wallet, ledger: Ledger):
     import time
+
     # Create a mint quote
     mint_quote = await wallet.request_mint(128)
-    
+
     # Check that paid_time is None initially
     quote = await ledger.crud.get_mint_quote(quote_id=mint_quote.quote, db=ledger.db)
     assert quote is not None
@@ -509,7 +529,7 @@ async def test_mint_quote_paid_time_update(wallet: Wallet, ledger: Ledger):
 
     # Simulate payment
     await pay_if_regtest(mint_quote.request)
-    
+
     # Trigger check at mint (this updates the state in DB)
     _ = await ledger.get_mint_quote(mint_quote.quote)
     # Check that paid_time is now set

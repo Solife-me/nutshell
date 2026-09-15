@@ -1,4 +1,5 @@
 from typing import Any, cast
+from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
@@ -8,8 +9,11 @@ from cashu.core.errors import (
     BlindAuthAmountExceededError,
     BlindAuthFailedError,
     BlindAuthRateLimitExceededError,
+    BlindAuthRequiredError,
     ClearAuthFailedError,
+    ClearAuthRequiredError,
 )
+from cashu.core.secret import Secret, Tags
 from cashu.core.settings import settings
 from cashu.mint.auth.base import User
 from cashu.mint.auth.server import AuthLedger
@@ -24,6 +28,25 @@ def _ledger() -> AuthLedger:
 def _auth_token(secret: str = "secret", proof_id: str = "kid") -> str:
     proof = Proof(id=proof_id, amount=1, C="00", secret=secret)
     return AuthProof.from_proof(proof).to_base64()
+
+
+@pytest.mark.parametrize(
+    "error_class, code",
+    [
+        (ClearAuthRequiredError, 30001),
+        (ClearAuthFailedError, 30002),
+        (BlindAuthRequiredError, 31001),
+        (BlindAuthFailedError, 31002),
+        (BlindAuthAmountExceededError, 31003),
+        (BlindAuthRateLimitExceededError, 31004),
+    ],
+)
+def test_auth_error_codes_match_nut21_and_nut22(error_class, code):
+    """Auth error codes are specified in NUT-21 and NUT-22, see
+    https://github.com/cashubtc/nuts/blob/main/error_codes.md
+    """
+    assert error_class.code == code
+    assert error_class().code == code
 
 
 def test_verify_oicd_issuer_accepts_matching_issuer():
@@ -96,8 +119,9 @@ async def test_verify_clear_auth_maps_verification_errors(monkeypatch):
 
     monkeypatch.setattr(ledger, "_get_user", get_user)
 
-    with pytest.raises(ClearAuthFailedError):
+    with pytest.raises(ClearAuthFailedError) as exc_info:
         await ledger.verify_clear_auth("token")
+    assert exc_info.value.code == 30002
 
 
 @pytest.mark.asyncio
@@ -116,8 +140,9 @@ async def test_verify_clear_auth_maps_rate_limit_errors(monkeypatch):
 
     monkeypatch.setattr("cashu.mint.auth.server.assert_limit", fail_limit)
 
-    with pytest.raises(BlindAuthRateLimitExceededError):
+    with pytest.raises(BlindAuthRateLimitExceededError) as exc_info:
         await ledger.verify_clear_auth("token")
+    assert exc_info.value.code == 31004
 
 
 @pytest.mark.asyncio
@@ -145,8 +170,9 @@ async def test_mint_blind_auth_enforces_maximum_outputs(monkeypatch):
     monkeypatch.setattr(settings, "mint_auth_max_blind_tokens", 2)
     outputs = [BlindedMessage(id="kid", amount=1, B_=f"b{i}") for i in range(3)]
 
-    with pytest.raises(BlindAuthAmountExceededError, match="Too many outputs"):
+    with pytest.raises(BlindAuthAmountExceededError, match="Too many outputs") as exc_info:
         await ledger.mint_blind_auth(outputs=outputs, user=User(id="alice"))
+    assert exc_info.value.code == 31003
 
 
 @pytest.mark.asyncio
@@ -214,6 +240,58 @@ async def test_verify_blind_auth_invalidates_on_success_and_unsets_pending():
         "invalidated": "secret",
         "unset": "secret",
     }
+
+
+@pytest.mark.asyncio
+async def test_verify_blind_auth_warns_on_nut10_secret():
+    ledger = _ledger()
+    token = _auth_token(
+        secret=Secret(
+            kind="P2PK",
+            data="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            tags=Tags(tags=[]),
+            nonce="0" * 32,
+        ).serialize()
+    )
+
+    async def verify_inputs_and_outputs(*, proofs):
+        assert proofs[0].secret.startswith("[")
+
+    class DbWrite:
+        async def _verify_spent_proofs_and_set_pending(self, proofs, keysets):
+            return None
+
+        async def _unset_proofs_pending(self, proofs, keysets):
+            return None
+
+        async def invalidate_proofs(self, *, proofs, keysets):
+            return None
+
+    cast(Any, ledger).verify_inputs_and_outputs = verify_inputs_and_outputs
+    cast(Any, ledger).db_write = DbWrite()
+    cast(Any, ledger).keysets = {"kid": object()}
+
+    with patch("cashu.mint.auth.server.logger.warning", MagicMock()) as warning:
+        async with ledger.verify_blind_auth(token):
+            pass
+
+    warning.assert_called_once()
+    assert "does not enforce spending conditions" in warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_verify_blind_auth_rejects_malformed_nut10_secret():
+    ledger = _ledger()
+    token = _auth_token(
+        secret=Secret(
+            kind="P2PK", data="not-a-pubkey", tags=Tags(tags=[]), nonce="0" * 32
+        ).serialize()
+    )
+
+    with pytest.raises(BlindAuthFailedError) as exc_info:
+        async with ledger.verify_blind_auth(token):
+            pass
+    assert exc_info.value.code == 31002
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,6 @@ import { setupManifest } from '@start9labs/start-sdk'
 
 import {
   depClnDescription,
-  depLnbitsDescription,
   depLndDescription,
   depPhoenixdDescription,
   long,
@@ -31,14 +30,6 @@ export const manifest = setupManifest({
     },
   },
   dependencies: {
-    lnbits: {
-      description: depLnbitsDescription,
-      optional: true,
-      metadata: {
-        title: 'LNbits',
-        icon: 'https://raw.githubusercontent.com/Start9Labs/lnbits-startos/refs/heads/master/icon.svg',
-      },
-    },
     lnd: {
       description: depLndDescription,
       optional: true,

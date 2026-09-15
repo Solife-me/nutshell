@@ -3,10 +3,7 @@ import { storeJson } from './fileModels/store.json'
 import { sdk } from './sdk'
 import { apiPort, dataDir, packageId } from './utils'
 
-const backendEnv = (
-  backend: string | undefined,
-  lnbitsKey: string | undefined,
-) => {
+const backendEnv = (backend: string | undefined) => {
   switch (backend) {
     case 'lnd':
       return {
@@ -20,15 +17,8 @@ const backendEnv = (
     case 'cln':
       return {
         MINT_BACKEND_BOLT11_SAT: 'CLNRestWallet',
-        MINT_BACKEND_BOLT12_SAT: 'CLNRestWallet',
         MINT_CLNREST_RUNE: '/mnt/cln/.commando-env',
         MINT_CLNREST_URL: 'http://c-lightning.startos:3010',
-      }
-    case 'lnbits':
-      return {
-        MINT_BACKEND_BOLT11_SAT: 'LNbitsWallet',
-        MINT_LNBITS_ENDPOINT: 'http://lnbits.startos:5000',
-        MINT_LNBITS_KEY: lnbitsKey ?? '',
       }
     case 'phoenixd':
       return {
@@ -36,10 +26,14 @@ const backendEnv = (
         MINT_PHOENIXD_ENDPOINT: 'http://phoenixd.startos:9740',
         MINT_PHOENIXD_PASSWORD: '/mnt/phoenixd/phoenix.conf',
       }
-    default:
+    case 'fakewallet':
       return {
         MINT_BACKEND_BOLT11_SAT: 'FakeWallet',
       }
+    default:
+      throw new Error(
+        'The configured Lightning backend is no longer supported. Run Configure Lightning Backend before starting Nutshell.',
+      )
   }
 }
 
@@ -140,10 +134,6 @@ export const main = sdk.setupMain(async ({ effects }) => {
 
   const mintPrivateKey = store.mintPrivateKey
 
-  if (store.lightningBackend === 'lnbits' && !store.lnbitsKey) {
-    throw new Error('LNbits backend selected but no API key is configured')
-  }
-
   let mounts = sdk.Mounts.of().mountVolume({
     volumeId: 'main',
     subpath: null,
@@ -190,7 +180,7 @@ export const main = sdk.setupMain(async ({ effects }) => {
       command: sdk.useEntrypoint(),
       env: {
         CASHU_DIR: dataDir,
-        ...backendEnv(store.lightningBackend, store.lnbitsKey),
+        ...backendEnv(store.lightningBackend),
         ...mintSettingsEnv(store),
         MINT_AUTH_DATABASE: `${dataDir}/auth`,
         MINT_DATABASE: `${dataDir}/mint`,

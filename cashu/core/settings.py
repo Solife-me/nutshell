@@ -43,7 +43,6 @@ class EnvSettings(CashuSettings):
     log_level: str = Field(default="INFO")
     cashu_dir: str = Field(default=os.path.join(str(Path.home()), ".cashu"))
     debug_profiling: bool = Field(default=False)
-    debug_mint_only_deprecated: bool = Field(default=False)
     db_backup_path: Optional[str] = Field(default=None)
     db_connection_pool: bool = Field(default=True)
 
@@ -113,13 +112,8 @@ class MintBackends(MintSettings):
     mint_backend_bolt11_msat: str = Field(default="")
     mint_backend_bolt11_usd: str = Field(default="")
     mint_backend_bolt11_eur: str = Field(default="")
-    mint_backend_bolt12_sat: str = Field(default="")
-    mint_backend_bolt12_msat: str = Field(default="")
 
-    mint_lnbits_endpoint: Optional[str] = Field(default=None)
-    mint_lnbits_key: Optional[str] = Field(default=None)
     mint_strike_key: Optional[str] = Field(default=None)
-    mint_blink_key: Optional[str] = Field(default=None)
 
     mint_spark_network: str = Field(default="TESTNET")
     mint_spark_api_key: Optional[str] = Field(default=None)
@@ -318,12 +312,14 @@ class LndRestFundingSource(MintSettings):
     mint_lnd_rest_admin_macaroon: Optional[str] = Field(default=None)
     mint_lnd_rest_invoice_macaroon: Optional[str] = Field(default=None)
     mint_lnd_enable_mpp: bool = Field(default=True)
+    mint_lnd_allow_self_payment: bool = Field(default=False)
 
 
 class LndRPCFundingSource(MintSettings):
     mint_lnd_rpc_endpoint: Optional[str] = Field(default=None)
     mint_lnd_rpc_cert: Optional[str] = Field(default=None)
     mint_lnd_rpc_macaroon: Optional[str] = Field(default=None)
+    mint_lnd_allow_self_payment: bool = Field(default=False)
 
 
 class CLNRestFundingSource(MintSettings):
@@ -331,12 +327,6 @@ class CLNRestFundingSource(MintSettings):
     mint_clnrest_cert: Optional[str] = Field(default=None)
     mint_clnrest_rune: Optional[str] = Field(default=None)
     mint_clnrest_enable_mpp: bool = Field(default=True)
-
-
-class CoreLightningRestFundingSource(MintSettings):
-    mint_corelightning_rest_url: Optional[str] = Field(default=None)
-    mint_corelightning_rest_macaroon: Optional[str] = Field(default=None)
-    mint_corelightning_rest_cert: Optional[str] = Field(default=None)
 
 
 class PhoenixdFundingSource(MintSettings):
@@ -361,12 +351,9 @@ class AuthSettings(MintSettings):
     mint_require_blind_auth_paths: List[List[str]] = [
         ["POST", "/v1/swap"],
         ["POST", "/v1/mint/quote/bolt11"],
-        ["POST", "/v1/mint/quote/bolt12"],
         ["POST", "/v1/mint/bolt11"],
-        ["POST", "/v1/mint/bolt12"],
         ["POST", "/v1/mint/bolt11/batch"],
         ["POST", "/v1/melt/bolt11"],
-        ["POST", "/v1/melt/bolt12"],
     ]
 
 
@@ -381,7 +368,6 @@ class Settings(
     EnvSettings,
     LndRPCFundingSource,
     LndRestFundingSource,
-    CoreLightningRestFundingSource,
     CLNRestFundingSource,
     PhoenixdFundingSource,
     FakeWalletSettings,

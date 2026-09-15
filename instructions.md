@@ -16,8 +16,8 @@ Nutshell runs a Cashu mint API on your StartOS server. A Cashu mint receives Lig
 3. Open Actions and run Configure Lightning Backend.
 4. Select a backend:
    - FakeWallet: testing only. Do not use it for real funds.
-   - Core Lightning: recommended when CLN is installed on the same StartOS server. This backend supports BOLT11 and BOLT12 in this package.
-   - LNbits, LND, or phoenixd: supported for BOLT11 mint and melt operations.
+   - Core Lightning: connects to CLN installed on the same StartOS server. The CLN version must support the upstream xpay RPC.
+   - LND or phoenixd: supported for BOLT11 mint and melt operations.
 5. Start the service.
 6. Open Interfaces and use the Mint API URL with a compatible Cashu wallet.
 
@@ -29,11 +29,11 @@ For same-server Core Lightning, make sure CLN is started and synced. Nutshell co
 
 If you change the backend after the mint has already issued tokens, test carefully. Existing tokens are tied to this mint's database and key material, while future mint and melt operations depend on the newly selected backend.
 
-## BOLT12 Support
+## Upgrading from Earlier Packages
 
-BOLT12 ecash support is enabled only when the Lightning backend is Core Lightning. When CLN is selected, the mint advertises NUT-25 support and exposes BOLT12 mint and melt endpoints.
+This package follows upstream Nutshell's BOLT11 implementation. The custom BOLT12 endpoints and NUT-25 advertisement have been removed. Complete outstanding BOLT12 mint and melt operations before upgrading; existing BOLT12 offers and quotes cannot be serviced by this release.
 
-Other backends remain BOLT11-only. If your wallet does not support BOLT12 Cashu flows yet, use normal BOLT11 mint and melt operations.
+Upstream has also removed LNbits support. If LNbits was configured, the service will refuse to start until you select a supported backend with Configure Lightning Backend. No backend is switched automatically. Follow the backend-change precautions above.
 
 ## Backups and Recovery
 
@@ -47,6 +47,5 @@ Only publish the mint URL if you intend other wallets to use it. If the mint is 
 
 - If the API stays not ready, check Logs first. The most common causes are missing backend credentials, an unreachable Lightning backend, or a backend that has not finished starting.
 - If Core Lightning is selected and dependency health fails, confirm CLN is installed, started, and reachable on the same StartOS server.
-- If BOLT12 requests fail with CLN selected, confirm your CLN version and configuration support offers.
 - If payments fail, check backend liquidity, channel state, fee limits, and whether the invoice or offer has expired.
 - If receiving tokens fails with `proofs are pending` after an interrupted swap or melt, stop Nutshell and run the Repair Pending Proofs action in inspect mode. Use repair mode for recoverable locks. Use force rollback only after confirming an outgoing Lightning payment did not settle.
