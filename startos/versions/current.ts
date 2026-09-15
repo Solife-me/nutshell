@@ -4,7 +4,7 @@ import { dependenciesForBackend } from '../dependencies'
 import { storeJson } from '../fileModels/store.json'
 
 export const current = VersionInfo.of({
-  version: '0.20.3:1',
+  version: '0.20.3:2',
   releaseNotes: {
     en_US: `Updated to upstream Nutshell main at dbb4f96e (2026-09-15), based on 0.20.3.
 
@@ -14,6 +14,7 @@ export const current = VersionInfo.of({
 - Retains StartOS integration for LND, Core Lightning, phoenixd, and FakeWallet
 - Core Lightning now uses the upstream xpay RPC
 - Fixes the auth promises database schema to align with the mint CRUD layer
+- Fixes LND/Core Lightning/phoenixd connectivity on StartOS 0.4.x+: dependency addresses are now resolved at runtime via sdk.host.getBridgeAddress instead of the retired \`.startos\`-suffixed DNS names, which caused TLS certificate errors and a startup crash loop
 
 Complete outstanding BOLT12 mint and melt operations before upgrading. This release cannot service earlier BOLT12 offers or quotes.
 

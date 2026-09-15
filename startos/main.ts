@@ -3,40 +3,6 @@ import { storeJson } from './fileModels/store.json'
 import { sdk } from './sdk'
 import { apiPort, dataDir, packageId } from './utils'
 
-const backendEnv = (backend: string | undefined) => {
-  switch (backend) {
-    case 'lnd':
-      return {
-        MINT_BACKEND_BOLT11_SAT: 'LndRestWallet',
-        MINT_LND_REST_CERT: '/mnt/lnd/tls.cert',
-        MINT_LND_REST_CERT_VERIFY: 'TRUE',
-        MINT_LND_REST_ENDPOINT: 'https://lnd.startos:8080',
-        MINT_LND_REST_MACAROON:
-          '/mnt/lnd/data/chain/bitcoin/mainnet/admin.macaroon',
-      }
-    case 'cln':
-      return {
-        MINT_BACKEND_BOLT11_SAT: 'CLNRestWallet',
-        MINT_CLNREST_RUNE: '/mnt/cln/.commando-env',
-        MINT_CLNREST_URL: 'http://c-lightning.startos:3010',
-      }
-    case 'phoenixd':
-      return {
-        MINT_BACKEND_BOLT11_SAT: 'PhoenixdWallet',
-        MINT_PHOENIXD_ENDPOINT: 'http://phoenixd.startos:9740',
-        MINT_PHOENIXD_PASSWORD: '/mnt/phoenixd/phoenix.conf',
-      }
-    case 'fakewallet':
-      return {
-        MINT_BACKEND_BOLT11_SAT: 'FakeWallet',
-      }
-    default:
-      throw new Error(
-        'The configured Lightning backend is no longer supported. Run Configure Lightning Backend before starting Nutshell.',
-      )
-  }
-}
-
 type MintSettingsStore = {
   mintBolt11DisableMelt?: string
   mintBolt11DisableMint?: string
@@ -134,6 +100,85 @@ export const main = sdk.setupMain(async ({ effects }) => {
 
   const mintPrivateKey = store.mintPrivateKey
 
+  // StartOS retired `.startos`-suffixed DNS in 0.4.x in favor of resolving
+  // dependency addresses at runtime via sdk.host.getBridgeAddress. The
+  // hostId/internalPort pairs below mirror each dependency's own
+  // startos/interfaces.ts (lnd-startos, cln-startos, phoenixd-startos).
+  const backendEnv = async (backend: string | undefined) => {
+    switch (backend) {
+      case 'lnd': {
+        const lndRest = await sdk.host
+          .getBridgeAddress(effects, {
+            packageId: 'lnd',
+            hostId: 'control',
+            internalPort: 8080,
+          })
+          .const()
+        if (!lndRest) {
+          throw new Error(
+            'LND is not yet reachable on the internal network. Ensure LND is installed, running, and unlocked.',
+          )
+        }
+        return {
+          MINT_BACKEND_BOLT11_SAT: 'LndRestWallet',
+          MINT_LND_REST_CERT: '/mnt/lnd/tls.cert',
+          MINT_LND_REST_CERT_VERIFY: 'TRUE',
+          MINT_LND_REST_ENDPOINT: `https://${lndRest}`,
+          MINT_LND_REST_MACAROON:
+            '/mnt/lnd/data/chain/bitcoin/mainnet/admin.macaroon',
+        }
+      }
+      case 'cln': {
+        const clnRest = await sdk.host
+          .getBridgeAddress(effects, {
+            packageId: 'c-lightning',
+            hostId: 'clnrest',
+            internalPort: 3010,
+            ssl: false,
+          })
+          .const()
+        if (!clnRest) {
+          throw new Error(
+            'Core Lightning is not yet reachable on the internal network. Ensure Core Lightning is installed and running.',
+          )
+        }
+        return {
+          MINT_BACKEND_BOLT11_SAT: 'CLNRestWallet',
+          MINT_CLNREST_RUNE: '/mnt/cln/.commando-env',
+          MINT_CLNREST_URL: `http://${clnRest}`,
+        }
+      }
+      case 'phoenixd': {
+        const phoenixd = await sdk.host
+          .getBridgeAddress(effects, {
+            packageId: 'phoenixd',
+            hostId: 'api-multi',
+            internalPort: 9740,
+            ssl: false,
+          })
+          .const()
+        if (!phoenixd) {
+          throw new Error(
+            'phoenixd is not yet reachable on the internal network. Ensure phoenixd is installed and running.',
+          )
+        }
+        return {
+          MINT_BACKEND_BOLT11_SAT: 'PhoenixdWallet',
+          MINT_PHOENIXD_ENDPOINT: `http://${phoenixd}`,
+          MINT_PHOENIXD_PASSWORD: '/mnt/phoenixd/phoenix.conf',
+        }
+      }
+      case 'fakewallet':
+        return {
+          MINT_BACKEND_BOLT11_SAT: 'FakeWallet',
+        }
+      default:
+        throw new Error(
+          'The configured Lightning backend is no longer supported. Run Configure Lightning Backend before starting Nutshell.',
+        )
+    }
+  }
+
   let mounts = sdk.Mounts.of().mountVolume({
     volumeId: 'main',
     subpath: null,
@@ -174,13 +219,15 @@ export const main = sdk.setupMain(async ({ effects }) => {
     'nutshell-sub',
   )
 
+  const lightningEnv = await backendEnv(store.lightningBackend)
+
   return sdk.Daemons.of(effects).addDaemon('primary', {
     subcontainer,
     exec: {
       command: sdk.useEntrypoint(),
       env: {
         CASHU_DIR: dataDir,
-        ...backendEnv(store.lightningBackend),
+        ...lightningEnv,
         ...mintSettingsEnv(store),
         MINT_AUTH_DATABASE: `${dataDir}/auth`,
         MINT_DATABASE: `${dataDir}/mint`,
