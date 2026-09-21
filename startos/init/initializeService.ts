@@ -14,6 +14,7 @@ export const initializeService = sdk.setupOnInit(async (effects, kind) => {
     lnbitsKey: undefined,
     mintBolt11DisableMelt: 'false',
     mintBolt11DisableMint: 'false',
+    mintForwardedAllowIps: '127.0.0.1',
     mintGlobalRateLimitPerMinute: '60',
     mintInfoContactMethod: undefined,
     mintInfoContactValue: undefined,
@@ -29,9 +30,11 @@ export const initializeService = sdk.setupOnInit(async (effects, kind) => {
     mintMaxMeltBolt11Sat: undefined,
     mintMaxMintBolt11Sat: undefined,
     mintPrivateKey: randomBytes(32).toString('hex'),
-    mintRateLimit: 'false',
+    mintRateLimit: 'true',
+    mintRateLimitProxyTrust: 'true',
     mintTransactionRateLimitPerMinute: '20',
     mintUrl: undefined,
+    mintWatchdogIgnoreMismatch: 'false',
   })
 
   await sdk.action.createOwnTask(

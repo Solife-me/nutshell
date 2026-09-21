@@ -14,12 +14,15 @@ type BoolValue = keyof typeof boolValues
 const defaults = {
   mintBolt11DisableMelt: 'false' satisfies BoolValue,
   mintBolt11DisableMint: 'false' satisfies BoolValue,
+  mintForwardedAllowIps: '127.0.0.1',
   mintGlobalRateLimitPerMinute: '60',
   mintInfoDescription: 'StartOS-packaged Cashu mint',
   mintInfoName: 'Nutshell on StartOS',
   mintInputFeePpk: '100',
-  mintRateLimit: 'false' satisfies BoolValue,
+  mintRateLimit: 'true' satisfies BoolValue,
+  mintRateLimitProxyTrust: 'true' satisfies BoolValue,
   mintTransactionRateLimitPerMinute: '20',
+  mintWatchdogIgnoreMismatch: 'false' satisfies BoolValue,
 } as const
 
 const asBool = (value: string | undefined): BoolValue =>
@@ -156,6 +159,14 @@ export const inputSpec = InputSpec.of({
     default: defaults.mintBolt11DisableMelt,
     values: boolValues,
   }),
+  mintWatchdogIgnoreMismatch: Value.select({
+    name: i18n('Ignore Balance Mismatch'),
+    description: i18n(
+      'RECOVERY ONLY. The mint shuts down when issued ecash exceeds the Lightning balance. Enable this to start a mint whose balances are already mismatched, reconcile them, then disable it again',
+    ),
+    default: defaults.mintWatchdogIgnoreMismatch,
+    values: boolValues,
+  }),
   mintMaxMintBolt11Sat: Value.text({
     name: i18n('Maximum Deposit'),
     description: i18n('Optional per-deposit limit in sats; blank disables the limit'),
@@ -179,9 +190,28 @@ export const inputSpec = InputSpec.of({
   }),
   mintRateLimit: Value.select({
     name: i18n('IP Rate Limiting'),
-    description: i18n('Optional IP-based rate limiter'),
+    description: i18n(
+      'Throttle requests per client IP. Leave enabled unless it interferes with legitimate use',
+    ),
     default: defaults.mintRateLimit,
     values: boolValues,
+  }),
+  mintRateLimitProxyTrust: Value.select({
+    name: i18n('Trust Proxy Headers'),
+    description: i18n(
+      'Read the client IP from X-Forwarded-For, but only on connections from a trusted proxy below. Disable if anything can reach the mint directly',
+    ),
+    default: defaults.mintRateLimitProxyTrust,
+    values: boolValues,
+  }),
+  mintForwardedAllowIps: Value.text({
+    name: i18n('Trusted Proxy IPs'),
+    description: i18n(
+      'Comma-separated peers whose forwarded client IP is believed, or * for any. Set this to the address StartOS proxies from if rate limiting throttles all users together',
+    ),
+    default: defaults.mintForwardedAllowIps,
+    required: true,
+    masked: false,
   }),
   mintGlobalRateLimitPerMinute: Value.text({
     name: i18n('Global Requests Per Minute'),
@@ -218,6 +248,8 @@ export const configureMintSettings = sdk.Action.withInput(
     return {
       mintBolt11DisableMelt: asBool(store?.mintBolt11DisableMelt),
       mintBolt11DisableMint: asBool(store?.mintBolt11DisableMint),
+      mintForwardedAllowIps:
+        store?.mintForwardedAllowIps ?? defaults.mintForwardedAllowIps,
       mintGlobalRateLimitPerMinute:
         store?.mintGlobalRateLimitPerMinute ??
         defaults.mintGlobalRateLimitPerMinute,
@@ -236,10 +268,12 @@ export const configureMintSettings = sdk.Action.withInput(
       mintMaxMeltBolt11Sat: store?.mintMaxMeltBolt11Sat ?? null,
       mintMaxMintBolt11Sat: store?.mintMaxMintBolt11Sat ?? null,
       mintRateLimit: asBool(store?.mintRateLimit),
+      mintRateLimitProxyTrust: asBool(store?.mintRateLimitProxyTrust),
       mintTransactionRateLimitPerMinute:
         store?.mintTransactionRateLimitPerMinute ??
         defaults.mintTransactionRateLimitPerMinute,
       mintUrl: store?.mintUrl ?? null,
+      mintWatchdogIgnoreMismatch: asBool(store?.mintWatchdogIgnoreMismatch),
     }
   },
 
@@ -254,6 +288,10 @@ export const configureMintSettings = sdk.Action.withInput(
     await storeJson.merge(effects, {
       mintBolt11DisableMelt: input.mintBolt11DisableMelt,
       mintBolt11DisableMint: input.mintBolt11DisableMint,
+      mintForwardedAllowIps: requiredText(
+        'Trusted proxy IPs',
+        input.mintForwardedAllowIps,
+      ),
       mintGlobalRateLimitPerMinute:
         integer(
           'Global requests per minute',
@@ -285,6 +323,7 @@ export const configureMintSettings = sdk.Action.withInput(
         input.mintMaxMintBolt11Sat,
       ),
       mintRateLimit: input.mintRateLimit,
+      mintRateLimitProxyTrust: input.mintRateLimitProxyTrust,
       mintTransactionRateLimitPerMinute:
         integer(
           'Transaction requests per minute',
@@ -292,6 +331,7 @@ export const configureMintSettings = sdk.Action.withInput(
           true,
         ) ?? defaults.mintTransactionRateLimitPerMinute,
       mintUrl: clean(input.mintUrl),
+      mintWatchdogIgnoreMismatch: input.mintWatchdogIgnoreMismatch,
     })
 
     return {

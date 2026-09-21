@@ -6,6 +6,7 @@ import { apiPort, dataDir, packageId } from './utils'
 type MintSettingsStore = {
   mintBolt11DisableMelt?: string
   mintBolt11DisableMint?: string
+  mintForwardedAllowIps?: string
   mintGlobalRateLimitPerMinute?: string
   mintInfoContactMethod?: string
   mintInfoContactValue?: string
@@ -21,8 +22,10 @@ type MintSettingsStore = {
   mintMaxMeltBolt11Sat?: string
   mintMaxMintBolt11Sat?: string
   mintRateLimit?: string
+  mintRateLimitProxyTrust?: string
   mintTransactionRateLimitPerMinute?: string
   mintUrl?: string
+  mintWatchdogIgnoreMismatch?: string
 }
 
 const enabledEnv = (value: string | undefined): 'TRUE' | 'FALSE' =>
@@ -55,6 +58,11 @@ const mintSettingsEnv = (store: MintSettingsStore): Record<string, string> => {
   const env: Record<string, string> = {
     MINT_BOLT11_DISABLE_MELT: enabledEnv(store.mintBolt11DisableMelt),
     MINT_BOLT11_DISABLE_MINT: enabledEnv(store.mintBolt11DisableMint),
+    // Safety interlock: once the mint cannot determine the outcome of an
+    // outgoing payment, stop accepting new melts rather than taking on more
+    // liabilities it may be unable to resolve. Clears on restart.
+    MINT_DISABLE_MELT_ON_ERROR: 'TRUE',
+    MINT_FORWARDED_ALLOW_IPS: clean(store.mintForwardedAllowIps) ?? '127.0.0.1',
     MINT_GLOBAL_RATE_LIMIT_PER_MINUTE:
       clean(store.mintGlobalRateLimitPerMinute) ?? '60',
     MINT_INFO_DESCRIPTION:
@@ -62,11 +70,19 @@ const mintSettingsEnv = (store: MintSettingsStore): Record<string, string> => {
     MINT_INFO_NAME: clean(store.mintInfoName) ?? 'Nutshell on StartOS',
     MINT_INPUT_FEE_PPK: clean(store.mintInputFeePpk) ?? '100',
     MINT_RATE_LIMIT: enabledEnv(store.mintRateLimit),
+    MINT_RATE_LIMIT_PROXY_TRUST: enabledEnv(store.mintRateLimitProxyTrust),
     MINT_REDIS_CACHE_ENABLED: 'FALSE',
     MINT_REQUIRE_AUTH: 'FALSE',
     MINT_RPC_SERVER_ENABLE: 'FALSE',
     MINT_TRANSACTION_RATE_LIMIT_PER_MINUTE:
       clean(store.mintTransactionRateLimitPerMinute) ?? '20',
+    // Balance watchdog: shut the mint down if issued ecash ever exceeds what
+    // the Lightning backend can pay out, or if that reserve gap starts
+    // shrinking. This is the circuit breaker that catches a drain in progress,
+    // so it is always on; use the recovery toggle below to start a mint whose
+    // balances are already known to be mismatched.
+    MINT_WATCHDOG_ENABLED: 'TRUE',
+    MINT_WATCHDOG_IGNORE_MISMATCH: enabledEnv(store.mintWatchdogIgnoreMismatch),
   }
 
   addOptional(env, 'MINT_INFO_DESCRIPTION_LONG', store.mintInfoDescriptionLong)

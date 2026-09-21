@@ -9,6 +9,7 @@ const shape = z.object({
   lnbitsKey: optionalString,
   mintBolt11DisableMelt: z.string().catch('false'),
   mintBolt11DisableMint: z.string().catch('false'),
+  mintForwardedAllowIps: z.string().catch('127.0.0.1'),
   mintGlobalRateLimitPerMinute: z.string().catch('60'),
   mintInfoContactMethod: optionalString,
   mintInfoContactValue: optionalString,
@@ -24,9 +25,11 @@ const shape = z.object({
   mintMaxMeltBolt11Sat: optionalString,
   mintMaxMintBolt11Sat: optionalString,
   mintPrivateKey: z.string(),
-  mintRateLimit: z.string().catch('false'),
+  mintRateLimit: z.string().catch('true'),
+  mintRateLimitProxyTrust: z.string().catch('true'),
   mintTransactionRateLimitPerMinute: z.string().catch('20'),
   mintUrl: optionalString,
+  mintWatchdogIgnoreMismatch: z.string().catch('false'),
 })
 
 export const storeJson = FileHelper.json(
