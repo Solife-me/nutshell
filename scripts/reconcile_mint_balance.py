@@ -265,7 +265,9 @@ def report(data: Dict[str, Any], anomalies: Dict[str, Any]) -> int:
     return 0
 
 
-def fix_counter(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+def fix_counter(
+    conn: sqlite3.Connection, data: Dict[str, Any], quiet: bool = False
+) -> None:
     changed = 0
     for ks in data["keysets"].values():
         if ks["drift"] == 0:
@@ -273,19 +275,22 @@ def fix_counter(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
         if ks["id"] not in {
             r["id"] for r in _rows(conn, "SELECT id FROM keysets")
         }:
-            print(f"  skipping unknown keyset {ks['id']} (no keysets row)")
+            if not quiet:
+                print(f"  skipping unknown keyset {ks['id']} (no keysets row)")
             continue
         conn.execute(
             "UPDATE keysets SET balance = ? WHERE id = ?",
             (ks["expected_counter"], ks["id"]),
         )
-        print(
-            f"  {ks['id'][:16]}: {ks['counter']} -> {ks['expected_counter']}"
-            f" (drift {ks['drift']:+})"
-        )
+        if not quiet:
+            print(
+                f"  {ks['id'][:16]}: {ks['counter']} -> {ks['expected_counter']}"
+                f" (drift {ks['drift']:+})"
+            )
         changed += 1
     conn.commit()
-    print(f"\nUpdated {changed} keyset counter(s). No ecash was modified.")
+    if not quiet:
+        print(f"\nUpdated {changed} keyset counter(s). No ecash was modified.")
 
 
 def main() -> int:
@@ -309,12 +314,31 @@ def main() -> int:
         data = collect(conn)
         anomalies = find_melt_anomalies(conn)
 
+        ledger_inconsistent = any(
+            ks["outstanding"] < 0 for ks in data["keysets"].values()
+        )
+        fixed: List[Dict[str, Any]] = []
+
+        if args.fix_counter and not ledger_inconsistent:
+            fixed = [
+                {
+                    "id": ks["id"],
+                    "unit": ks["unit"],
+                    "from": ks["counter"],
+                    "to": ks["expected_counter"],
+                }
+                for ks in data["keysets"].values()
+                if ks["drift"] != 0
+            ]
+
         if args.json:
             print(
                 json.dumps(
                     {
-                        "keysets": list(data["keysets"].values()),
                         "anomalies": anomalies,
+                        "fixed": fixed,
+                        "keysets": list(data["keysets"].values()),
+                        "ledgerInconsistent": ledger_inconsistent,
                     },
                     indent=2,
                     default=str,
@@ -324,13 +348,14 @@ def main() -> int:
             report(data, anomalies)
 
         if args.fix_counter:
-            if any(ks["outstanding"] < 0 for ks in data["keysets"].values()):
+            if ledger_inconsistent:
                 raise SystemExit(
                     "\nRefusing to fix: the ledger itself shows negative outstanding"
                     " ecash. Investigate before overwriting the counter."
                 )
-            print("\nApplying counter fix...")
-            fix_counter(conn, data)
+            if not args.json:
+                print("\nApplying counter fix...")
+            fix_counter(conn, data, quiet=args.json)
     finally:
         conn.close()
     return 0

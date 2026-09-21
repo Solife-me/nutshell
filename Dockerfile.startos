@@ -25,6 +25,7 @@ WORKDIR /app
 
 COPY pyproject.toml poetry.lock README.md LICENSE.md MANIFEST.in setup.py ./
 COPY cashu ./cashu
+COPY scripts ./scripts
 COPY tor ./tor
 
 RUN poetry config virtualenvs.create false \

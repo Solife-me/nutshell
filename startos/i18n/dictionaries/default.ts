@@ -112,6 +112,18 @@ const dict = {
   'These are the current keysets. Re-run with Rotate to retire the active one for the selected unit.': 110,
   'Keyset Rotated': 111,
   'Issuing now happens on the new keyset. Start Nutshell to pick it up. Ecash on the retired keyset stays redeemable.': 112,
+  'Inspect compares the reported balance against the signature ledger and changes nothing. Reset rewrites the reported balance to match the ledger; it never touches issued or spent ecash': 113,
+  'Reconcile Mint Balance': 114,
+  'Compare the reported mint balance against the ledger of what was signed and spent': 115,
+  'Stop Nutshell and back up its data first. Reset only rewrites the reported balance counter; it never touches issued or spent ecash, and it refuses to run if the ledger itself is inconsistent.': 116,
+  'Ledger Inconsistent': 117,
+  'More ecash was redeemed than was ever signed. That is not counter drift and the balance was NOT reset. Investigate before running this again.': 118,
+  'Balance Reset': 119,
+  'The reported balance now matches the ledger. No ecash was modified.': 120,
+  'Mint Balance Reconciliation': 121,
+  'The reported balance does not match the ledger. Outstanding ecash is your real liability; compare it against your Lightning balance, then re-run with Reset.': 122,
+  'The reported balance matches the ledger, but some melt quotes hold spent proofs without being marked paid. Check those invoices against your Lightning node.': 123,
+  'The reported balance matches the ledger.': 124,
 } as const
 
 /** Plumbing. DO NOT EDIT. */

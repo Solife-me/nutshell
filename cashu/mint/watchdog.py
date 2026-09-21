@@ -70,43 +70,57 @@ class LedgerWatchdog(SupportsDb, SupportsBackends):
             f"Dispatching backend checker for unit: {unit.name} and backend: {backend.__class__.__name__}"
         )
         while True:
-            backend_status = await backend.status()
-            backend_balance = backend_status.balance
-            last_balance_log_entry: MintBalanceLogEntry | None = None
-            async with self.watcher_db.connect() as conn:
-                last_balance_log_entry = await self.crud.get_last_balance_log_entry(
-                    unit=unit, db=self.watcher_db
+            try:
+                await self._check_backend_once(unit, backend)
+            except Exception as e:
+                # Without this the task ends on the first error and the mint
+                # runs unwatched for the rest of its life. A negative keyset
+                # balance is enough to raise here, which is exactly the state
+                # the watchdog exists to catch.
+                logger.error(
+                    f"Watchdog check failed for unit {unit.name}: {e}. "
+                    "Retrying on the next interval."
                 )
-                keyset_balance, keyset_fees_paid = await self.get_unit_balance_and_fees(
-                    unit, db=self.watcher_db, conn=conn
-                )
+            await asyncio.sleep(settings.mint_watchdog_balance_check_interval_seconds)
 
-                logger.debug(f"Last balance log entry: {last_balance_log_entry}")
-                logger.debug(
-                    f"Backend balance {backend.__class__.__name__}: {backend_balance}"
-                )
-                logger.debug(
-                    f"Unit balance {unit.name}: {keyset_balance}, fees paid: {keyset_fees_paid}"
-                )
+    async def _check_backend_once(
+        self, unit: Unit, backend: LightningBackend
+    ) -> None:
+        backend_status = await backend.status()
+        backend_balance = backend_status.balance
+        last_balance_log_entry: MintBalanceLogEntry | None = None
+        async with self.watcher_db.connect() as conn:
+            last_balance_log_entry = await self.crud.get_last_balance_log_entry(
+                unit=unit, db=self.watcher_db
+            )
+            keyset_balance, keyset_fees_paid = await self.get_unit_balance_and_fees(
+                unit, db=self.watcher_db, conn=conn
+            )
 
-                ok = await self.check_balances_and_abort(
-                    backend,
-                    last_balance_log_entry,
+            logger.debug(f"Last balance log entry: {last_balance_log_entry}")
+            logger.debug(
+                f"Backend balance {backend.__class__.__name__}: {backend_balance}"
+            )
+            logger.debug(
+                f"Unit balance {unit.name}: {keyset_balance}, fees paid: {keyset_fees_paid}"
+            )
+
+            ok = await self.check_balances_and_abort(
+                backend,
+                last_balance_log_entry,
+                backend_balance,
+                keyset_balance,
+                keyset_fees_paid,
+            )
+
+            if ok or settings.mint_watchdog_ignore_mismatch:
+                await self.crud.store_balance_log(
                     backend_balance,
                     keyset_balance,
                     keyset_fees_paid,
+                    db=self.db,
+                    conn=conn,
                 )
-
-                if ok or settings.mint_watchdog_ignore_mismatch:
-                    await self.crud.store_balance_log(
-                        backend_balance,
-                        keyset_balance,
-                        keyset_fees_paid,
-                        db=self.db,
-                        conn=conn,
-                    )
-
-            await asyncio.sleep(settings.mint_watchdog_balance_check_interval_seconds)
 
     async def check_balances_and_abort(
         self,
