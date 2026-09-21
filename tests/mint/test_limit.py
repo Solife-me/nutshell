@@ -209,3 +209,68 @@ def test_assert_limit():
         mock_hit.return_value = True
         # Shouldn't raise
         assert_limit("1.2.3.4", limit=10)
+
+
+def _http_request(headers: list[tuple[bytes, bytes]], client_ip: str) -> Request:
+    return Request(
+        {"type": "http", "headers": headers, "client": (client_ip, 8000)}
+    )
+
+
+def test_forwarding_headers_from_an_untrusted_peer_are_ignored(monkeypatch):
+    """A direct client must not be able to pick its own rate-limit bucket.
+
+    `X-Forwarded-For` is attacker-controlled on any request that did not pass
+    through a proxy. Believing it unconditionally lets a client vary the header
+    per request and never hit a limit.
+    """
+    monkeypatch.setattr(settings, "mint_rate_limit_proxy_trust", True)
+    monkeypatch.setattr(settings, "mint_forwarded_allow_ips", "127.0.0.1")
+
+    spoofed = _http_request(
+        [(b"x-forwarded-for", b"203.0.113.99")], "198.51.100.7"
+    )
+    assert _get_client_ip(spoofed) == "198.51.100.7"
+
+    spoofed_cf = _http_request(
+        [(b"cf-connecting-ip", b"203.0.113.99")], "198.51.100.7"
+    )
+    assert _get_client_ip(spoofed_cf) == "198.51.100.7"
+
+
+def test_forwarding_headers_from_a_trusted_peer_are_used(monkeypatch):
+    monkeypatch.setattr(settings, "mint_rate_limit_proxy_trust", True)
+    monkeypatch.setattr(settings, "mint_forwarded_allow_ips", "10.0.0.2")
+
+    forwarded = _http_request(
+        [(b"x-forwarded-for", b"203.0.113.99, 10.0.0.2")], "10.0.0.2"
+    )
+    assert _get_client_ip(forwarded) == "203.0.113.99"
+
+    # and the resolved client is then rate limited rather than exempted,
+    # even though the proxy itself sits on the loopback interface
+    monkeypatch.setattr(settings, "mint_forwarded_allow_ips", "127.0.0.1")
+    proxied = _http_request(
+        [(b"x-forwarded-for", b"203.0.113.99")], "127.0.0.1"
+    )
+    assert get_remote_address_excluding_local(proxied) == "203.0.113.99"
+
+
+def test_wildcard_trusts_any_peer(monkeypatch):
+    monkeypatch.setattr(settings, "mint_rate_limit_proxy_trust", True)
+    monkeypatch.setattr(settings, "mint_forwarded_allow_ips", "*")
+
+    request = _http_request(
+        [(b"x-forwarded-for", b"203.0.113.99")], "198.51.100.7"
+    )
+    assert _get_client_ip(request) == "203.0.113.99"
+
+
+def test_proxy_trust_disabled_ignores_headers_from_any_peer(monkeypatch):
+    monkeypatch.setattr(settings, "mint_rate_limit_proxy_trust", False)
+    monkeypatch.setattr(settings, "mint_forwarded_allow_ips", "*")
+
+    request = _http_request(
+        [(b"x-forwarded-for", b"203.0.113.99")], "198.51.100.7"
+    )
+    assert _get_client_ip(request) == "198.51.100.7"

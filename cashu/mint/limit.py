@@ -11,6 +11,27 @@ from starlette.requests import Request
 from ..core.settings import settings
 
 
+def _trusted_proxies() -> set[str]:
+    """Peers whose forwarding headers may be believed.
+
+    `mint_forwarded_allow_ips` is already the uvicorn-level trusted-proxy list;
+    the rate limiter uses the same list so the two cannot disagree. "*" trusts
+    any peer, which is only safe when nothing but a proxy can reach the mint.
+    """
+    return {
+        entry.strip()
+        for entry in settings.mint_forwarded_allow_ips.split(",")
+        if entry.strip()
+    }
+
+
+def _peer_is_trusted_proxy(peer: Optional[str]) -> bool:
+    trusted = _trusted_proxies()
+    if "*" in trusted:
+        return True
+    return peer is not None and peer in trusted
+
+
 def _rate_limit_exceeded_handler(request: Request, exc: Exception) -> JSONResponse:
     remote_address = _get_client_ip(request)
     logger.warning(
@@ -23,23 +44,40 @@ def _rate_limit_exceeded_handler(request: Request, exc: Exception) -> JSONRespon
     )
 
 
-def _get_client_ip(request: Request) -> str:
-    """Extract the client IP from the request, checking proxy headers first
-    if configured to trust them.
+def _client_ip_from_headers(
+    peer: Optional[str], get_header
+) -> Optional[str]:
+    """Resolve the client IP from forwarding headers, or None.
 
-    Header priority (when proxy trust is enabled):
+    Forwarding headers are attacker-controlled on any request that did not come
+    through a proxy, so they are only believed when the *peer* is a proxy we
+    trust. Reading them unconditionally would let a client mint a fresh
+    rate-limit bucket per request simply by varying `X-Forwarded-For`, which
+    defeats the limiter entirely.
+
+    Header priority:
       1. CF-Connecting-IP  – set by Cloudflare
       2. X-Forwarded-For   – set by most reverse proxies (first entry)
-      3. request.client     – direct connection IP (fallback)
     """
-    if settings.mint_rate_limit_proxy_trust:
-        cf_ip = request.headers.get("cf-connecting-ip")
-        if cf_ip:
-            return cf_ip.strip()
-        xff = request.headers.get("x-forwarded-for")
-        if xff:
-            return xff.split(",")[0].strip()
-    return get_remote_address(request)
+    if not settings.mint_rate_limit_proxy_trust:
+        return None
+    if not _peer_is_trusted_proxy(peer):
+        return None
+
+    cf_ip = get_header("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
+    xff = get_header("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return None
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract the client IP, preferring headers from a trusted proxy."""
+    peer = get_remote_address(request)
+    forwarded = _client_ip_from_headers(peer, request.headers.get)
+    return forwarded or peer
 
 
 def get_remote_address_excluding_local(request: Request) -> str:
@@ -96,17 +134,9 @@ def get_ws_remote_address(ws: WebSocket) -> str:
     Returns:
         str: The ip address for the current websocket.
     """
-    if settings.mint_rate_limit_proxy_trust:
-        cf_ip = ws.headers.get("cf-connecting-ip")
-        if cf_ip:
-            return cf_ip.strip()
-        xff = ws.headers.get("x-forwarded-for")
-        if xff:
-            return xff.split(",")[0].strip()
-    if not ws.client or not ws.client.host:
-        return "127.0.0.1"
-
-    return ws.client.host
+    peer = ws.client.host if ws.client and ws.client.host else "127.0.0.1"
+    forwarded = _client_ip_from_headers(peer, ws.headers.get)
+    return forwarded or peer
 
 
 def limit_websocket(ws: WebSocket):

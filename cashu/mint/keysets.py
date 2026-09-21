@@ -32,6 +32,11 @@ class LedgerKeysets(SupportsKeysets, SupportsSeed, SupportsDb):
                     and keyset_derivation_counter > counter
                 ):
                     derivation_path = keyset.derivation_path
+                    # Track the counter we just accepted, otherwise every
+                    # keyset above the *original* counter overwrites the last
+                    # and the final answer is whichever came last in iteration
+                    # order rather than the highest.
+                    counter = keyset_derivation_counter
         return derivation_path
 
     async def rotate_next_keyset(
@@ -60,17 +65,28 @@ class LedgerKeysets(SupportsKeysets, SupportsSeed, SupportsDb):
 
         logger.info(f"Attempting keyset rotation for unit {str(unit)}")
 
+        # Every active keyset for this unit is retired by the rotation, not just
+        # the one the new path is derived from: leaving a second one active
+        # would keep issuing on a keyset the operator believes is closed, and
+        # would make the next rotation's "highest counter" ambiguous.
+        active_keysets = [
+            keyset
+            for keyset in self.keysets.values()
+            if keyset.active and keyset.unit == unit
+        ]
+
         # Select keyset with the greatest counter
         selected_keyset = None
         selected_keyset_counter = -1
-        for keyset in self.keysets.values():
-            if keyset.active and keyset.unit == unit:
-                keyset_derivation_path = keyset.derivation_path.split("/")
-                keyset_derivation_counter = int(
-                    keyset_derivation_path[-1].replace("'", "")
-                )
-                if keyset_derivation_counter > selected_keyset_counter:
-                    selected_keyset = keyset
+        for keyset in active_keysets:
+            keyset_derivation_counter = int(
+                keyset.derivation_path.split("/")[-1].replace("'", "")
+            )
+            if keyset_derivation_counter > selected_keyset_counter:
+                selected_keyset = keyset
+                # Without this the comparison is always against -1, so the
+                # winner is whichever keyset happened to come last.
+                selected_keyset_counter = keyset_derivation_counter
 
         # If no selected keyset, then there is no keyset for this unit
         if not selected_keyset:
@@ -88,30 +104,48 @@ class LedgerKeysets(SupportsKeysets, SupportsSeed, SupportsDb):
         new_derivation_path[-1] = (
             str(int(new_derivation_path[-1].replace("'", "")) + 1) + "'"
         )
+        new_derivation_path_str = "/".join(new_derivation_path)
+
+        existing = [
+            keyset
+            for keyset in self.keysets.values()
+            if keyset.derivation_path == new_derivation_path_str
+        ]
+        if existing:
+            raise KeysetError(
+                f"Cannot rotate: derivation path {new_derivation_path_str} is"
+                f" already used by keyset {existing[0].id}."
+            )
 
         # keys amounts for this keyset: if amounts is None we use `self.amounts`
         amounts = [2**i for i in range(max_order)] if max_order else self.amounts
 
+        # An unspecified fee inherits the outgoing keyset's rather than
+        # silently resetting to zero (`MintKeyset` maps None to 0).
+        if input_fee_ppk is None:
+            input_fee_ppk = selected_keyset.input_fee_ppk
+
         # Generate the keyset
         new_keyset = MintKeyset(
-            derivation_path="/".join(new_derivation_path),
+            derivation_path=new_derivation_path_str,
             seed=self.seed,
             amounts=amounts,
             input_fee_ppk=input_fee_ppk,
             active=True,
-            final_expiry=final_expiry
+            final_expiry=final_expiry,
         )
 
         logger.debug(f"New keyset was generated with Id {new_keyset.id}. Saving...")
         await self.crud.store_keyset(keyset=new_keyset, db=self.db)
         self.keysets[new_keyset.id] = new_keyset
 
-        logger.debug(f"De-activating keyset {selected_keyset.id}...")
-        selected_keyset.active = False
-        await self.crud.update_keyset(keyset=selected_keyset, db=self.db)
-        self.keysets[selected_keyset.id] = selected_keyset
+        for keyset in active_keysets:
+            logger.debug(f"De-activating keyset {keyset.id}...")
+            keyset.active = False
+            await self.crud.update_keyset(keyset=keyset, db=self.db)
+            self.keysets[keyset.id] = keyset
+            logger.debug(f"Keyset {keyset.id} was de-activated")
 
-        logger.debug(f"Keyset {keyset.id} was de-activated")
         return new_keyset
 
     async def activate_keyset(

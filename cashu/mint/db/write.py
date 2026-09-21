@@ -314,6 +314,31 @@ class DbWriteHelper:
             await self.events.submit(quote)
         return quotes
 
+    async def _melt_quotes_for_same_payment(
+        self,
+        quote: MeltQuote,
+        conn: Optional[Connection] = None,
+    ) -> List[MeltQuote]:
+        """All melt quotes that would settle the same payment as `quote`.
+
+        Matching on checking_id alone is not enough: the internal-settlement
+        path takes its checking_id from the mint quote while the backend path
+        uses the payment hash, so two quotes for one invoice can carry
+        different ids. Both are deduplicated by quote id.
+        """
+        by_checking_id = await self.crud.get_melt_quotes_by_checking_id(
+            checking_id=quote.checking_id, db=self.db, conn=conn
+        )
+        by_request = await self.crud.get_melt_quotes_by_request(
+            request=quote.request, db=self.db, conn=conn
+        )
+        return list(
+            {
+                existing.quote: existing
+                for existing in by_checking_id + by_request
+            }.values()
+        )
+
     async def _set_melt_quote_pending(
         self, quote: MeltQuote, conn: Optional[Connection] = None
     ) -> MeltQuote:
@@ -328,14 +353,15 @@ class DbWriteHelper:
             raise TransactionError("Melt quote doesn't have checking ID.")
         async with self.db.get_connection(
             lock_table="melt_quotes",
-            lock_select_statement="checking_id = :checking_id",
-            lock_parameters={"checking_id": quote.checking_id},
+            lock_select_statement="checking_id = :checking_id OR request = :request",
+            lock_parameters={
+                "checking_id": quote.checking_id,
+                "request": quote.request,
+            },
             conn=conn,
         ) as conn:
-            # get all melt quotes with same checking_id from db and check if there is one already pending or paid
-            quotes_db = await self.crud.get_melt_quotes_by_checking_id(
-                checking_id=quote.checking_id, db=self.db, conn=conn
-            )
+            # any quote that would settle the same payment blocks this one
+            quotes_db = await self._melt_quotes_for_same_payment(quote, conn=conn)
             if len(quotes_db) == 0:
                 raise TransactionError("Melt quote not found.")
             if any([quote.state == MeltQuoteState.paid for quote in quotes_db]):
@@ -439,13 +465,14 @@ class DbWriteHelper:
         """
         async with self.db.get_connection(
             lock_table="melt_quotes",
-            lock_select_statement="checking_id = :checking_id",
-            lock_parameters={"checking_id": quote.checking_id},
+            lock_select_statement="checking_id = :checking_id OR request = :request",
+            lock_parameters={
+                "checking_id": quote.checking_id,
+                "request": quote.request,
+            },
         ) as conn:
-            # get all melt quotes with same checking_id from db and check if there is one already pending or paid
-            quotes_db = await self.crud.get_melt_quotes_by_checking_id(
-                checking_id=quote.checking_id, db=self.db, conn=conn
-            )
+            # any quote that would settle the same payment blocks this one
+            quotes_db = await self._melt_quotes_for_same_payment(quote, conn=conn)
             if any([quote.state == MeltQuoteState.paid for quote in quotes_db]):
                 raise InvoiceAlreadyPaidError("Melt quote already paid or pending.")
             if any([quote.state == MeltQuoteState.pending for quote in quotes_db]):

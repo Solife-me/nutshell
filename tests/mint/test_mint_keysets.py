@@ -520,3 +520,109 @@ async def test_keyset_id_v2_test_vectors():
     assert get_keyset_id_version(keyset_id_v2_vec1) == "01", "Vector 1 should be version 01"
     assert get_keyset_id_version(keyset_id_v2_vec2) == "01", "Vector 2 should be version 01"
     assert get_keyset_id_version(keyset_id_v2_vec3) == "01", "Vector 3 should be version 01"
+
+
+@pytest.mark.asyncio
+async def test_keyset_rotation_picks_the_highest_counter(ledger: Ledger):
+    """Rotation must derive from the highest-counter active keyset.
+
+    Regression: `selected_keyset_counter` was never updated inside the
+    selection loop, so every candidate compared against -1 and the winner was
+    whichever keyset came last in dict order. With more than one active keyset
+    for a unit that silently rotates off a stale branch.
+    """
+    base = next(
+        filter(lambda k: k.unit == Unit["sat"] and k.active, ledger.keysets.values())
+    )
+    prefix = base.derivation_path.rsplit("/", 1)[0]
+    base_counter = int(base.derivation_path.split("/")[-1].replace("'", ""))
+
+    # Insert extra active keysets so that the highest counter is NOT last in
+    # iteration order; the buggy selection returns the last one instead.
+    highest = base_counter + 7
+    for counter in (highest, base_counter + 3):
+        extra = MintKeyset(
+            derivation_path=f"{prefix}/{counter}'",
+            seed=ledger.seed,
+            amounts=ledger.amounts,
+            active=True,
+            input_fee_ppk=100,
+        )
+        await ledger.crud.store_keyset(keyset=extra, db=ledger.db)
+        ledger.keysets[extra.id] = extra
+
+    new_keyset = await ledger.rotate_next_keyset(unit=Unit["sat"])
+
+    new_counter = int(new_keyset.derivation_path.split("/")[-1].replace("'", ""))
+    assert new_counter == highest + 1, (
+        f"rotated from the wrong branch: got counter {new_counter}, "
+        f"expected {highest + 1}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_keyset_rotation_deactivates_every_active_keyset(ledger: Ledger):
+    """A rotation must leave exactly one active keyset per unit."""
+    base = next(
+        filter(lambda k: k.unit == Unit["sat"] and k.active, ledger.keysets.values())
+    )
+    prefix = base.derivation_path.rsplit("/", 1)[0]
+    base_counter = int(base.derivation_path.split("/")[-1].replace("'", ""))
+
+    extra = MintKeyset(
+        derivation_path=f"{prefix}/{base_counter + 2}'",
+        seed=ledger.seed,
+        amounts=ledger.amounts,
+        active=True,
+        input_fee_ppk=100,
+    )
+    await ledger.crud.store_keyset(keyset=extra, db=ledger.db)
+    ledger.keysets[extra.id] = extra
+
+    new_keyset = await ledger.rotate_next_keyset(unit=Unit["sat"])
+
+    stored = await ledger.crud.get_keyset(db=ledger.db, unit="sat")
+    still_active = [k.id for k in stored if k.active]
+    assert still_active == [new_keyset.id], (
+        f"expected only {new_keyset.id} active, got {still_active}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_keyset_rotation_inherits_the_input_fee(ledger: Ledger):
+    """An unspecified fee must carry over, not silently reset to zero."""
+    base = next(
+        filter(lambda k: k.unit == Unit["sat"] and k.active, ledger.keysets.values())
+    )
+    base.input_fee_ppk = 100
+    await ledger.crud.update_keyset(keyset=base, db=ledger.db)
+
+    new_keyset = await ledger.rotate_next_keyset(unit=Unit["sat"])
+    assert new_keyset.input_fee_ppk == 100
+
+    # an explicit fee still wins, including an explicit zero
+    newer = await ledger.rotate_next_keyset(unit=Unit["sat"], input_fee_ppk=0)
+    assert newer.input_fee_ppk == 0
+
+
+def test_maybe_update_derivation_path_picks_the_highest_counter(ledger: Ledger):
+    """Startup path selection has the same highest-counter requirement."""
+    base = next(
+        filter(lambda k: k.unit == Unit["sat"] and k.active, ledger.keysets.values())
+    )
+    prefix = base.derivation_path.rsplit("/", 1)[0]
+    base_counter = int(base.derivation_path.split("/")[-1].replace("'", ""))
+
+    highest = base_counter + 9
+    for counter in (highest, base_counter + 4):
+        extra = MintKeyset(
+            derivation_path=f"{prefix}/{counter}'",
+            seed=ledger.seed,
+            amounts=ledger.amounts,
+            active=True,
+            input_fee_ppk=0,
+        )
+        ledger.keysets[extra.id] = extra
+
+    resolved = ledger.maybe_update_derivation_path(base.derivation_path)
+    assert resolved == f"{prefix}/{highest}'"

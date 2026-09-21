@@ -300,6 +300,15 @@ class LedgerCrud(ABC):
     ) -> Optional[MeltQuote]: ...
 
     @abstractmethod
+    async def get_melt_quotes_by_request(
+        self,
+        *,
+        request: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[MeltQuote]: ...
+
+    @abstractmethod
     async def update_melt_quote(
         self,
         *,
@@ -1120,5 +1129,28 @@ class LedgerCrudSqlite(LedgerCrud):
             WHERE checking_id = :checking_id
             """,
             {"checking_id": checking_id},
+        )
+        return [MeltQuote.from_row(row) for row in results]  # type: ignore
+
+    async def get_melt_quotes_by_request(
+        self,
+        *,
+        request: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[MeltQuote]:
+        """All melt quotes for a payment request.
+
+        Two quotes for the same invoice can carry different checking_ids (the
+        internal-settlement path takes its id from the mint quote, while the
+        backend path uses the payment hash), so duplicate-payment checks must
+        match on the request as well.
+        """
+        results = await (conn or db).fetchall(
+            f"""
+            SELECT * FROM {db.table_with_schema("melt_quotes")}
+            WHERE request = :request
+            """,
+            {"request": request},
         )
         return [MeltQuote.from_row(row) for row in results]  # type: ignore
