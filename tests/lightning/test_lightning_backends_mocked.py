@@ -13,6 +13,7 @@ from cashu.core.models import (
     PostMeltRequestOptionMpp,
     PostMeltRequestOptions,
 )
+from cashu.core.settings import settings
 from cashu.lightning.base import PaymentResult, Unsupported
 from cashu.lightning.clnrest import (
     CLN_PAYMENT_STATUS_COMPLETE,
@@ -231,6 +232,204 @@ async def test_phoenixd_get_invoice_status_maps_settled():
     assert status.result == PaymentResult.SETTLED
     assert status.fee == Amount(Unit.msat, 5)
     assert status.preimage == "00"
+
+
+def _phoenixd_wallet():
+    wallet = object.__new__(PhoenixdWallet)
+    wallet.unit = Unit.sat
+    return wallet
+
+
+def _phoenixd_get_client(payload, status_code: int = 200):
+    class Client:
+        async def get(self, url, timeout=None):
+            return _response(status_code, payload)
+
+    return Client()
+
+
+def _phoenixd_post_client(payload, status_code: int = 200):
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            return _response(status_code, payload)
+
+    return Client()
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_pay_invoice_settles_only_with_preimage(monkeypatch):
+    """A 200 without a failure reason is not proof of payment.
+
+    Settling on "no `reason` field" would destroy the user's proofs for any
+    response shape the backend did not anticipate, without paying the invoice.
+    """
+    wallet = _phoenixd_wallet()
+    monkeypatch.setattr(
+        "cashu.lightning.phoenixd.decode",
+        lambda request: SimpleNamespace(amount_msat=1000),
+    )
+
+    cast(Any, wallet).client = _phoenixd_post_client(
+        {"paymentHash": "ab" * 32, "recipientAmountSat": 1}
+    )
+    result = await wallet.pay_invoice(_quote("lnbc1fake"), 100_000)
+    assert result.result == PaymentResult.UNKNOWN
+    assert result.checking_id == "ab" * 32
+
+    cast(Any, wallet).client = _phoenixd_post_client(
+        {
+            "paymentHash": "ab" * 32,
+            "routingFeeSat": 4,
+            "paymentPreimage": "cd" * 32,
+        }
+    )
+    result = await wallet.pay_invoice(_quote("lnbc1fake"), 100_000)
+    assert result.result == PaymentResult.SETTLED
+    assert result.fee == Amount(Unit.sat, 4)
+    assert result.preimage == "cd" * 32
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_pay_invoice_network_error_is_unknown(monkeypatch):
+    """A dropped connection may still have started the payment."""
+    wallet = _phoenixd_wallet()
+    monkeypatch.setattr(
+        "cashu.lightning.phoenixd.decode",
+        lambda request: SimpleNamespace(amount_msat=1000),
+    )
+
+    class Client:
+        async def post(self, url, data=None, timeout=None):
+            raise httpx.ConnectError("connection reset")
+
+    cast(Any, wallet).client = Client()
+    result = await wallet.pay_invoice(_quote("lnbc1fake"), 100_000)
+    assert result.result == PaymentResult.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_pay_invoice_reports_fee_overrun(monkeypatch, caplog):
+    """phoenixd takes no fee limit, so an overrun must at least be visible."""
+    wallet = _phoenixd_wallet()
+    monkeypatch.setattr(
+        "cashu.lightning.phoenixd.decode",
+        lambda request: SimpleNamespace(amount_msat=1000),
+    )
+    cast(Any, wallet).client = _phoenixd_post_client(
+        {
+            "paymentHash": "ab" * 32,
+            "routingFeeSat": 50,
+            "paymentPreimage": "cd" * 32,
+        }
+    )
+    result = await wallet.pay_invoice(_quote("lnbc1fake"), 2000)
+    assert result.result == PaymentResult.SETTLED
+    assert result.fee == Amount(Unit.sat, 50)
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_incoming_shortfall_is_not_credited():
+    """phoenixd nets its fees out of incoming payments.
+
+    Crediting `requestedSat` when only `receivedSat` arrived issues ecash the
+    mint holds no sats for, so the quote must not settle.
+    """
+    wallet = _phoenixd_wallet()
+    cast(Any, wallet).client = _phoenixd_get_client(
+        {
+            "isPaid": True,
+            "requestedSat": 1000,
+            "receivedSat": 960,
+            "fees": 40_000,
+            "preimage": "00" * 32,
+        }
+    )
+    status = await wallet.get_invoice_status("ab" * 32)
+    assert status.result == PaymentResult.PENDING
+    assert status.error_message and "short by 40 sat" in status.error_message
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_incoming_full_amount_settles():
+    wallet = _phoenixd_wallet()
+    cast(Any, wallet).client = _phoenixd_get_client(
+        {
+            "isPaid": True,
+            "requestedSat": 1000,
+            "receivedSat": 1000,
+            "fees": 0,
+            "preimage": "00" * 32,
+        }
+    )
+    status = await wallet.get_invoice_status("ab" * 32)
+    assert status.result == PaymentResult.SETTLED
+    assert status.preimage == "00" * 32
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_incoming_shortfall_within_tolerance_settles(monkeypatch):
+    monkeypatch.setattr(settings, "mint_phoenixd_max_inbound_fee_sat", 40)
+    wallet = _phoenixd_wallet()
+    cast(Any, wallet).client = _phoenixd_get_client(
+        {
+            "isPaid": True,
+            "requestedSat": 1000,
+            "receivedSat": 960,
+            "fees": 40_000,
+            "preimage": "00" * 32,
+        }
+    )
+    status = await wallet.get_invoice_status("ab" * 32)
+    assert status.result == PaymentResult.SETTLED
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_outgoing_status_distinguishes_pending_from_failed():
+    wallet = _phoenixd_wallet()
+
+    cast(Any, wallet).client = _phoenixd_get_client(
+        {"isPaid": False, "completedAt": None}
+    )
+    assert (await wallet.get_payment_status("ab" * 32)).result == (
+        PaymentResult.PENDING
+    )
+
+    cast(Any, wallet).client = _phoenixd_get_client(
+        {"isPaid": False, "completedAt": 1700000000}
+    )
+    assert (await wallet.get_payment_status("ab" * 32)).result == (
+        PaymentResult.FAILED
+    )
+
+
+@pytest.mark.asyncio
+async def test_phoenixd_fee_reserve_covers_own_schedule(monkeypatch):
+    """The reserve must cover phoenixd's 0.4% + 4 sat, which the generic
+    1%-with-a-2-sat-floor reserve undercuts on small payments."""
+    wallet = _phoenixd_wallet()
+
+    # 100 sat: generic reserve is the 2 sat floor, phoenixd charges 4.4 sat
+    monkeypatch.setattr(
+        "cashu.lightning.phoenixd.decode",
+        lambda request: SimpleNamespace(amount_msat=100_000, payment_hash="ab" * 32),
+    )
+    quote = await wallet.get_payment_quote(
+        PostMeltQuoteRequest(unit="sat", request="lnbc1fake")
+    )
+    assert quote.amount == Amount(Unit.sat, 100)
+    assert quote.fee.amount >= 5, f"reserve {quote.fee.amount} under-collects"
+
+    # 100_000 sat: the generic 1% reserve already exceeds 0.4% + 4 sat
+    monkeypatch.setattr(
+        "cashu.lightning.phoenixd.decode",
+        lambda request: SimpleNamespace(
+            amount_msat=100_000_000, payment_hash="ab" * 32
+        ),
+    )
+    quote = await wallet.get_payment_quote(
+        PostMeltQuoteRequest(unit="sat", request="lnbc1fake")
+    )
+    assert quote.fee.amount >= 404
 
 
 @pytest.mark.asyncio

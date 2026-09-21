@@ -332,6 +332,36 @@ class CLNRestFundingSource(MintSettings):
 class PhoenixdFundingSource(MintSettings):
     mint_phoenixd_endpoint: Optional[str] = Field(default=None)
     mint_phoenixd_password: Optional[str] = Field(default=None)
+    # phoenixd's /payinvoice takes no fee-limit parameter, so the mint cannot
+    # cap the routing fee at the node the way it does with LND or CLN. The only
+    # defence is to collect a fee reserve that already covers what phoenixd
+    # charges: ACINQ's published outgoing Lightning fee is 0.4% + 4 sat. These
+    # settings exist so an operator can follow a change to that schedule
+    # without patching the backend.
+    mint_phoenixd_fee_percent: float = Field(
+        default=0.4,
+        ge=0,
+        title="phoenixd outgoing fee percent",
+        description="Proportional part of phoenixd's outgoing payment fee.",
+    )
+    mint_phoenixd_fee_flat_sat: int = Field(
+        default=4,
+        ge=0,
+        title="phoenixd outgoing flat fee",
+        description="Flat part of phoenixd's outgoing payment fee, in satoshi.",
+    )
+    mint_phoenixd_max_inbound_fee_sat: int = Field(
+        default=0,
+        ge=0,
+        title="Tolerated phoenixd inbound shortfall",
+        description=(
+            "Satoshi by which an incoming payment may fall short of the mint "
+            "quote amount and still be credited. phoenixd deducts mining and "
+            "liquidity fees from incoming payments; anything tolerated here is "
+            "ecash the mint issues without holding the backing sats, so the "
+            "default of 0 refuses to issue rather than over-issue."
+        ),
+    )
 
 
 class AuthSettings(MintSettings):
