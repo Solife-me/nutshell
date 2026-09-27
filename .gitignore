@@ -148,6 +148,7 @@ tor-data
 junit.xml
 
 # StartOS packaging
+.tools/
 node_modules/
 javascript/
 *.s9pk
